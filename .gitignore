@@ -1,0 +1,6 @@
+MAVREC/
+archive/**/*.zip
+inference/
+dataset/
+models/**/*.pth
+archive/old results/
