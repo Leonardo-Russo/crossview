@@ -38,7 +38,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"using device: {device}")
 
 # Initialize Encoder and Decoder
-encoder = ViTEncoder(out_features=output_dims, model_name='dinov2_vitl14_reg_lc').to(device)
+encoder = ViTEncoder(out_features=output_dims, model_name='dinov2_vits14_reg_lc').to(device)
 decoder = Decoder(input_dims=output_dims, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
 # encoder = Encoder(latent_dim=output_dims).to(device)
 print(encoder, decoder)
@@ -167,4 +167,4 @@ def validate(encoder, decoder, loader, epoch, results_path, criterion, device):
     return avg_val_loss, avg_psnr, avg_ssim
 
 
-train(encoder, decoder, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=10, save_path='lDINO + Huber')
+train(encoder, decoder, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=10, save_path='sDINO + Huber')
