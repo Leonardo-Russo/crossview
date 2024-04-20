@@ -120,26 +120,37 @@ def save_dataset_samples(dataloader, save_path=None, num_images=16, title="Datas
         title (str): The title of the plot.
         num_images (int): The number of images to display in the grid.
     """
-    images = next(iter(dataloader))[:num_images]
-    # Check if the dataloader returns a tuple of (images, labels) or just images
-    if isinstance(images, tuple):
-        images = images[0]
+    # Attempt to get a batch of paired images
+    try:
+        aerial_images, ground_images = next(iter(dataloader))
+    except ValueError as e:
+        print("Failed to unpack images from the DataLoader:", e)
+        return
     
+    # Select a subset of images
+    if aerial_images.size(0) > num_images:
+        indices = torch.randperm(aerial_images.size(0))[:num_images]
+        aerial_images = aerial_images[indices]
+        ground_images = ground_images[indices]
+
+    # Concatenate the images from the two domains for display
+    images = torch.cat((aerial_images, ground_images), dim=0)
+
     # Make a grid from the images
-    grid_img = make_grid(images, nrow=int(num_images**0.5), normalize=True, scale_each=True)
-    
-    # Convert the grid to a numpy array and transpose the dimensions for plotting
+    grid_img = make_grid(images, nrow=int(math.sqrt(images.size(0))), normalize=True)
     npimg = grid_img.numpy().transpose((1, 2, 0))
 
     # Create a filename from the title
     if save_path is None:
         save_path = title.lower().replace(" ", "_") + '.png'
     
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(15, 7.5))  # Adjust the size appropriately
     plt.imshow(npimg)
     plt.title(title)
     plt.axis('off')
     plt.savefig(save_path)
+    plt.close()
+
 
 
 
@@ -189,9 +200,9 @@ class CombinedLoss(nn.Module):
         return loss_huber + loss_perceptual
 
 
-class ViTEncoder(nn.Module):
+class DINOv2Encoder(nn.Module):
     def __init__(self, out_features=100, model_name='dinov2_vits14_reg_lc'):
-        super(ViTEncoder, self).__init__()
+        super(DINOv2Encoder, self).__init__()
         
         # # Load the ViT from timm
         # self.vit = timm.create_model('vit_base_patch16_224', pretrained=True)
@@ -214,7 +225,7 @@ class ViTEncoder(nn.Module):
         # Remove the classifier head from DINOv2
         self.vit.linear_head = nn.Identity()
 
-        self.reducer = nn.Sequential(
+        self.adapter = nn.Sequential(
             nn.Linear(linear_features, (linear_features + out_features) // 2),      # floored average between input and output features
             nn.ELU(True),
             nn.Linear((linear_features + out_features) // 2, out_features)
@@ -222,7 +233,7 @@ class ViTEncoder(nn.Module):
 
     def forward(self, x):
         x = self.vit(x)
-        x = self.reducer(x)     # reduce the feature to (out_features x 1)
+        x = self.adapter(x)         # adapt the features to (out_features x 1)
         return x
 
 
@@ -257,6 +268,28 @@ class Encoder(nn.Module):
 		x = self.flatten(x)
 		x = self.fc(x)
 		return x
+    
+
+class MLP(nn.Module):
+    def __init__(self, input_dims, output_dims):
+        super(MLP, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_dims, 512),
+            nn.ELU(True),
+            nn.BatchNorm1d(512),
+            nn.Dropout(0.2),
+            nn.Linear(512, 256),
+            nn.ELU(True),
+            nn.BatchNorm1d(256),
+            nn.Dropout(0.2),
+            nn.Linear(256, 128),
+            nn.ELU(True),
+            nn.BatchNorm1d(128),
+            nn.Linear(128, output_dims)
+        )
+
+    def forward(self, x):
+        return self.fc(x)
    
 
 class Decoder(nn.Module):
@@ -320,3 +353,39 @@ class CustomDataset(Dataset):
             image = self.transform(image)
         
         return image
+    
+
+class PairedImagesDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        """
+        Dataset to load paired images from given directories for aerial and ground images.
+        Args:
+            root_dir (str): Directory with all the images divided into 'aerial' and 'ground' subdirectories.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
+        self.aerial_dir = os.path.join(root_dir, 'aerial')
+        self.ground_dir = os.path.join(root_dir, 'ground')
+        self.transform = transform
+        self.paired_filenames = [f for f in os.listdir(self.aerial_dir) if os.path.isfile(os.path.join(self.aerial_dir, f))]
+
+        # Debug: Print out the number of files found
+        # print(f"Number of paired files found: {len(self.paired_filenames)}")
+        if len(self.paired_filenames) == 0:
+            print(f"Check if the directory paths are correct and accessible: {self.aerial_dir}")
+    
+    def __len__(self):
+        return len(self.paired_filenames)
+    
+    def __getitem__(self, idx):
+        aerial_img_path = os.path.join(self.aerial_dir, self.paired_filenames[idx])
+        ground_img_path = os.path.join(self.ground_dir, self.paired_filenames[idx].replace('drone', 'ground'))
+
+        aerial_image = Image.open(aerial_img_path).convert('RGB')
+        ground_image = Image.open(ground_img_path).convert('RGB')
+
+        if self.transform:
+            aerial_image = self.transform(aerial_image)
+            ground_image = self.transform(ground_image)
+
+        return aerial_image, ground_image

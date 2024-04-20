@@ -17,18 +17,13 @@ import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
 
 
-# # To Do's:
-# - make it so that the metrics are storable
-
-
-# # Set the device
-# !export CUDA_VISIBLE_DEVICES=0
 
 # Constants
 image_channels = 3          # for RGB images
 image_size = 224            # assuming square images
 hidden_dims = 512           # hidden dimensions
-output_dims = 100           # size of phi
+n_encoded = 1028            # output size for the encoders
+n_phi = 1000                 # size of phi
 batch_size = 64
 shuffle = True
 
@@ -38,18 +33,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"using device: {device}")
 
 # Initialize Encoder and Decoder
-encoder = ViTEncoder(out_features=output_dims, model_name='dinov2_vits14_reg_lc').to(device)
-decoder = Decoder(input_dims=output_dims, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
-# encoder = Encoder(latent_dim=output_dims).to(device)
-print(encoder, decoder)
+encoder_A = DINOv2Encoder(out_features=n_encoded, model_name='dinov2_vitl14_reg_lc').to(device)
+encoder_G = DINOv2Encoder(out_features=n_encoded, model_name='dinov2_vitl14_reg_lc').to(device)
+mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi).to(device)
+decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
+decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
+# print(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A)
 
 # Optimizer and Loss Function
 learning_rate = 1e-3
-optimizer = optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=learning_rate)
+optimizer = optim.Adam(list(encoder_A.parameters()) + list(encoder_G.parameters()) + list(mlp.parameters()) + list(decoder_G2A.parameters()) + list(decoder_A2G.parameters()), lr=learning_rate)
 criterion = nn.HuberLoss()
-# criterion = CombinedLoss(device=device)
-# criterion = nn.MSELoss()
-# criterion = PerceptualLoss().to(device)
 
 # Transformations
 transform = transforms.Compose([
@@ -59,8 +53,8 @@ transform = transforms.Compose([
 ])
 
 # Define the Datasets
-train_dataset = CustomDataset('dataset/train', transform=transform)
-val_dataset = CustomDataset('dataset/val', transform=transform)
+train_dataset = PairedImagesDataset('dataset/train', transform=transform)
+val_dataset = PairedImagesDataset('dataset/val', transform=transform)
 
 # Define the DataLoaders
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
@@ -69,10 +63,13 @@ val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle)
 
 # ----- Training ----- #
 
-def train(encoder, decoder, train_loader, val_loader, device, criterion, optimizer, epochs=10, save_path='untitled'):
+def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val_loader, device, criterion, optimizer, epochs=10, save_path='untitled'):
 
-    encoder.to(device)
-    decoder.to(device)
+    encoder_A.to(device)
+    encoder_G.to(device)
+    mlp.to(device)
+    decoder_A2G.to(device)
+    decoder_G2A.to(device)
 
     model_path = os.path.join('models', save_path)
     metrics_path = os.path.join('models', save_path, 'metrics')
@@ -84,87 +81,86 @@ def train(encoder, decoder, train_loader, val_loader, device, criterion, optimiz
     save_dataset_samples(train_dataloader, os.path.join(model_path, 'training_samples.png'), num_images=16, title='Training Samples')
     save_dataset_samples(val_dataloader, os.path.join(model_path, 'validation_samples.png'), num_images=16, title='Validation Samples')
 
-    
-    # Metrics storage
-    epochs_data = []
-    train_loss_data = []
-    val_loss_data = []
-    val_psnr_data = []
-    val_ssim_data = []
-
+      
     for epoch in range(epochs):
-        encoder.train()
-        decoder.train()
-        running_loss = 0.0
+        encoder_A.train()
+        encoder_G.train()
+        mlp.train()
+        decoder_A2G.train()
+        decoder_G2A.train()
+        
+        total_loss = 0.0
 
-        for images in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
-            images = images.to(device)
+        for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
+            images_A, images_G = images_A.to(device), images_G.to(device)
             optimizer.zero_grad()
-            encoded_imgs = encoder(images)
-            decoded_imgs = decoder(encoded_imgs)
-            loss = criterion(decoded_imgs, images)
-            loss.backward()
+
+            # Encode images A and B
+            encoded_A = encoder_A(images_A)
+            encoded_G = encoder_G(images_G)
+            # print(f"Encoded A shape: {encoded_A.shape}")
+            # print(f"Encoded G shape: {encoded_G.shape}")
+
+            # Concatenate and process through MLP
+            phi = mlp(torch.cat((encoded_A, encoded_G), dim=1))
+            # print(f"Phi shape: {phi.shape}")
+            # print(f"Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
+
+            # Decode the MLP output into reconstructed images
+            reconstructed_A = decoder_G2A(torch.cat((phi, encoded_G), dim=1))
+            reconstructed_G = decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+
+            # Compute loss for both reconstructions
+            loss_A = criterion(reconstructed_A, images_A)
+            loss_G = criterion(reconstructed_G, images_G)
+            total_loss = loss_A + loss_G
+
+            # Backward and optimize
+            total_loss.backward()
             optimizer.step()
-            running_loss += loss.item()
+            total_loss += total_loss.item()
 
-        avg_loss = running_loss / len(train_loader)
-        train_loss_data.append(avg_loss)
-        epochs_data.append(epoch + 1)
+        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {total_loss/len(train_loader):.4f}')
+
+        # Validate the Architecture
+        validate(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, val_loader, criterion, epoch, results_path, device)
         
-        # Validation and metrics collection
-        val_loss, val_psnr, val_ssim = validate(encoder, decoder, val_loader, epoch, results_path, criterion, device)
-        val_loss_data.append(val_loss)
-        val_psnr_data.append(val_psnr)
-        val_ssim_data.append(val_ssim)
-
-        # Plotting the metrics
-        plot_metrics(epochs_data, train_loss_data, val_loss_data, val_psnr_data, val_ssim_data, metrics_path)
-        
-        # Save the Model
-        torch.save(encoder.state_dict(), os.path.join(model_path, f'encoder_epoch_{epoch+1}.pth'))
-        torch.save(decoder.state_dict(), os.path.join(model_path, f'decoder_epoch_{epoch+1}.pth'))
+        # # Save the Models
+        # torch.save(encoder_A.state_dict(), os.path.join(model_path, f'encoder_A_epoch_{epoch+1}.pth'))
+        # torch.save(encoder_G.state_dict(), os.path.join(model_path, f'encoder_B_epoch_{epoch+1}.pth'))
+        # torch.save(mlp.state_dict(), os.path.join(model_path, f'mlp_epoch_{epoch+1}.pth'))
+        # torch.save(decoder_A2G.state_dict(), os.path.join(model_path, f'decoder_A2G_epoch_{epoch+1}.pth'))
+        # torch.save(decoder_G2A.state_dict(), os.path.join(model_path, f'decoder_G2A_epoch_{epoch+1}.pth'))
 
 
-def validate(encoder, decoder, loader, epoch, results_path, criterion, device):
-    encoder.eval()
-    decoder.eval()
-    validation_loss = 0.0
-    total_psnr = 0.0
-    total_ssim = 0.0
+def validate(encoder_A, encoder_B, mlp, decoder_A2G, decoder_G2A, loader, criterion, epoch, results_path, device):
+    encoder_A.eval()
+    encoder_B.eval()
+    mlp.eval()
+    decoder_A2G.eval()
+    decoder_G2A.eval()
+    total_val_loss = 0
 
     with torch.no_grad():
-        for images in loader:
-            images = images.to(device)
-            encoded_imgs = encoder(images)
-            decoded_imgs = decoder(encoded_imgs)
-            loss = criterion(decoded_imgs, images)
-            validation_loss += loss.item()
+        for images_A, images_G in loader:
+            images_A, images_G = images_A.to(device), images_G.to(device)
 
-            # Calculate PSNR
-            total_psnr += psnr(images, decoded_imgs)
+            encoded_A = encoder_A(images_A)
+            encoded_G = encoder_G(images_G)
+            phi = mlp(torch.cat((encoded_A, encoded_G), dim=1))
+            reconstructed_A = decoder_G2A(torch.cat((phi, encoded_G), dim=1))
+            reconstructed_G = decoder_A2G(torch.cat((phi, encoded_A), dim=1))
 
-            # Calculate SSIM for each image in the batch
-            for i in range(images.size(0)):
-                # print(f"Max-Min values in original images: {img1.max()} | {img1.min()}")
-                # print(f"Max-Min values in decoded  images: {img2.max()} | {img2.min()}")
-                img1 = images[i].squeeze().cpu().numpy()
-                img2 = decoded_imgs[i].squeeze().cpu().numpy()
-                ssim_value = ssim(img1, img2, data_range=1, channel_axis=0, win_size=5, gaussian_weights=False)
-                total_ssim += ssim_value
-            
-    with torch.no_grad():
-        for images in loader:
-            images = images.to(device)
-            decoded_imgs = decoder(encoder(images))
-            break
+            loss_A = criterion(reconstructed_A, images_A)
+            loss_G = criterion(reconstructed_G, images_G)
+            total_loss = loss_A + loss_G
 
-    visualize_reconstruction(images, decoded_imgs, epoch, save_path=results_path)
+            total_val_loss += total_loss.item()
+
+    # visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=results_path)
+    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=results_path)
+
+    print(f'Validation Loss: {total_val_loss / len(loader):.4f}')
 
 
-    avg_val_loss = validation_loss / len(loader)
-    avg_psnr = total_psnr / len(loader)
-    avg_ssim = total_ssim / (len(loader) * images.size(0))  # Normalize by total number of images
-    return avg_val_loss, avg_psnr, avg_ssim
-
-
-train(encoder, decoder, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=10, save_path='sDINO + Huber')
+train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=10, save_path='lDINO + Huber + n_phi = 1000')
