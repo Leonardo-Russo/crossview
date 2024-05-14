@@ -17,6 +17,7 @@ from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from skimage.metrics import structural_similarity as ssim_metric
 import numpy as np
 import matplotlib.pyplot as plt
+import random
 
 
 def plot_metrics(epochs, train_loss, val_loss, val_psnr, val_ssim, path='training_plots'):
@@ -110,56 +111,61 @@ def visualize_reconstruction(original, reconstructed, epoch, save_path=None, num
     plt.close()
 
 
-
 def save_dataset_samples(dataloader, save_path=None, num_images=16, title="Dataset Images"):
     """
-    This function displays a grid of images from the provided DataLoader.
+    This function displays two grids of paired images from the provided DataLoader.
     
     Parameters:
         dataloader (DataLoader): The DataLoader from which to load the images.
         title (str): The title of the plot.
         num_images (int): The number of images to display in the grid.
     """
-    # Attempt to get a batch of paired images
-    try:
-        aerial_images, ground_images = next(iter(dataloader))
-    except ValueError as e:
-        print("Failed to unpack images from the DataLoader:", e)
-        return
-    
-    # Select a subset of images
-    if aerial_images.size(0) > num_images:
-        indices = torch.randperm(aerial_images.size(0))[:num_images]
-        aerial_images = aerial_images[indices]
-        ground_images = ground_images[indices]
+    # Get a batch of paired images
+    paired_images = next(iter(dataloader))
+    if isinstance(paired_images, list) and len(paired_images) == 2:
+        images_A, images_B = paired_images
+    else:
+        raise ValueError("The dataloader should return a list of (images_A, images_B)")
 
-    # Concatenate the images from the two domains for display
-    images = torch.cat((aerial_images, ground_images), dim=0)
+    # Ensure that we do not exceed the number of images in the batch
+    num_images = min(num_images, images_A.size(0), images_B.size(0))
 
-    # Make a grid from the images
-    grid_img = make_grid(images, nrow=int(math.sqrt(images.size(0))), normalize=True)
-    npimg = grid_img.numpy().transpose((1, 2, 0))
+    # Randomly select indices for display
+    indices = torch.randperm(images_A.size(0))[:num_images]
+
+    # Select the images from the tensors
+    selected_images_A = images_A[indices]
+    selected_images_B = images_B[indices]
+
+    # Create grids from the selected images
+    grid_img_A = make_grid(selected_images_A, nrow=int(math.sqrt(num_images)), normalize=True, scale_each=True)
+    grid_img_B = make_grid(selected_images_B, nrow=int(math.sqrt(num_images)), normalize=True, scale_each=True)
+
+    npimg_A = grid_img_A.numpy().transpose((1, 2, 0))
+    npimg_B = grid_img_B.numpy().transpose((1, 2, 0))
 
     # Create a filename from the title
     if save_path is None:
         save_path = title.lower().replace(" ", "_") + '.png'
     
-    plt.figure(figsize=(15, 7.5))  # Adjust the size appropriately
-    plt.imshow(npimg)
-    plt.title(title)
+    plt.figure(figsize=(20, 10))
+
+    # Display ground-level images
+    plt.subplot(1, 2, 1)
+    plt.imshow(npimg_A)
+    plt.title('Ground Level Images')
     plt.axis('off')
+
+    # Display aerial images
+    plt.subplot(1, 2, 2)
+    plt.imshow(npimg_B)
+    plt.title('Aerial Images')
+    plt.axis('off')
+
+    plt.suptitle(title)
+
     plt.savefig(save_path)
     plt.close()
-
-
-
-
-def combined_loss(output, target, alpha=1, beta=1):
-
-    huber_loss = nn.HuberLoss()
-    perceptual_loss = PerceptualLoss()
-
-    return alpha * huber_loss(output, target) + beta * perceptual_loss(output, target)
 
 
 def psnr(target, output, max_val=1.0):
@@ -170,39 +176,63 @@ def psnr(target, output, max_val=1.0):
     return np.mean(scores)
 
 
+def cvusa_sample(dataset_path, scene_percentage=1, split_ratio=0.8):
+    # Setup the absolute path to the dataset
+    all_scenes = [name for name in os.listdir(os.path.join(dataset_path, 'streetview/cutouts')) if os.path.isdir(os.path.join(dataset_path, 'streetview/cutouts', name))]
+    num_scenes_to_select = int(len(all_scenes) * scene_percentage)
+    selected_scenes = random.sample(all_scenes, num_scenes_to_select)
 
-class PerceptualLoss(nn.Module):
-    def __init__(self):
-        super(PerceptualLoss, self).__init__()
-        self.vgg = models.vgg16(weights=VGG16_Weights.DEFAULT).features[:16]
-        for param in self.vgg.parameters():
-            param.requires_grad = False     # freeze VGG layers
+    random.shuffle(selected_scenes)
+    split_point = int(split_ratio * len(selected_scenes))
+    train_scenes = selected_scenes[:split_point]
+    val_scenes = selected_scenes[split_point:]
 
-    def forward(self, reconstructed, original):
+    return train_scenes, val_scenes
 
-        # Compute features and the loss
-        reconstructed_features = self.vgg(reconstructed)
-        target_features = self.vgg(original)
-        loss = nn.functional.l1_loss(reconstructed_features, target_features)
+
+def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
+    """
+    Function to sample a percentage of the dataset and split it into training and validation sets.
+    
+    Parameters:
+        dataset_path (str): Path to the dataset root directory.
+        sample_percentage (float): Percentage of the dataset to sample.
+        split_ratio (float): Ratio to split the sampled data into training and validation sets.
         
-        return loss
+    Returns:
+        train_filenames (list): List of training filenames (tuples of panorama and satellite image paths).
+        val_filenames (list): List of validation filenames (tuples of panorama and satellite image paths).
+    """
+    panorama_dir = os.path.join(dataset_path, 'streetview', 'panos')
+    satellite_dir = os.path.join(dataset_path, 'streetview_aerial')
+
+    paired_filenames = []
+    for root, _, files in os.walk(panorama_dir):
+        for file in files:
+            if file.endswith('.jpg'):
+                pano_path = os.path.join(root, file)
+                lat, lon = get_metadata(pano_path)
+                if lat is None or lon is None:
+                    continue
+                zoom = 18  # Only consider zoom level 18
+                sat_path = get_aerial_path(satellite_dir, lat, lon, zoom)
+                if os.path.exists(sat_path):
+                    paired_filenames.append((pano_path, sat_path))
     
-
-class CombinedLoss(nn.Module):
-    def __init__(self, device):
-        super(CombinedLoss, self).__init__()
-        self.huber_loss = nn.HuberLoss()
-        self.perceptual_loss = PerceptualLoss().to(device)
+    num_to_select = int(len(paired_filenames) * sample_percentage)
+    selected_filenames = random.sample(paired_filenames, num_to_select)
     
-    def forward(self, outputs, targets):
-        loss_huber = self.huber_loss(outputs, targets)
-        loss_perceptual = self.perceptual_loss(outputs, targets)
-        return loss_huber + loss_perceptual
+    random.shuffle(selected_filenames)
+    split_point = int(split_ratio * len(selected_filenames))
+    train_filenames = selected_filenames[:split_point]
+    val_filenames = selected_filenames[split_point:]
+
+    return train_filenames, val_filenames
 
 
-class DINOv2Encoder(nn.Module):
+class ViTEncoder(nn.Module):
     def __init__(self, out_features=100, model_name='dinov2_vits14_reg_lc'):
-        super(DINOv2Encoder, self).__init__()
+        super(ViTEncoder, self).__init__()
         
         # # Load the ViT from timm
         # self.vit = timm.create_model('vit_base_patch16_224', pretrained=True)
@@ -225,7 +255,7 @@ class DINOv2Encoder(nn.Module):
         # Remove the classifier head from DINOv2
         self.vit.linear_head = nn.Identity()
 
-        self.adapter = nn.Sequential(
+        self.reducer = nn.Sequential(
             nn.Linear(linear_features, (linear_features + out_features) // 2),      # floored average between input and output features
             nn.ELU(True),
             nn.Linear((linear_features + out_features) // 2, out_features)
@@ -233,7 +263,7 @@ class DINOv2Encoder(nn.Module):
 
     def forward(self, x):
         x = self.vit(x)
-        x = self.adapter(x)         # adapt the features to (out_features x 1)
+        x = self.reducer(x)     # reduce the feature to (out_features x 1)
         return x
 
 
@@ -243,57 +273,41 @@ class Encoder(nn.Module):
 		super(Encoder, self).__init__()
 
 		self.cnn = nn.Sequential(
-			nn.Conv2d(3, 128, 3, stride=2, padding=1),
-			nn.BatchNorm2d(128),
-			nn.ELU(True),
-			nn.Conv2d(128, 256, 3, stride=2, padding=1),
-			nn.BatchNorm2d(256),
-			nn.ELU(True),
-			nn.Conv2d(256, 512, 3, stride=2, padding=0),
-			nn.BatchNorm2d(512),
-			nn.ELU(True),
-		)
+            nn.Conv2d(3, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ELU(True),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ELU(True),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ELU(True),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ELU(True),
+            nn.Conv2d(512, 1024, 3, stride=2, padding=1),
+            nn.BatchNorm2d(1024),
+            nn.ELU(True)                # 3x224x224 -> 64x112x112 -> 128x56x56 -> 256x28x28 -> 512x14x14 -> 1024x7x7
+        )
 
 		self.flatten = nn.Flatten(start_dim=1)
 
 		self.fc = nn.Sequential(
-			nn.Linear(373248, 128),
+			nn.Linear(1024*7*7, 5000),
 			nn.ELU(True),
-			nn.Linear(128, latent_dim)
+			nn.Linear(5000, latent_dim)
 		)
 
 	def forward(self, x):
 		x = self.cnn(x)
-		# print("enc: ", x.shape)
+		# print("Encoder CNN Output Size: ", x.shape)
 		x = self.flatten(x)
 		x = self.fc(x)
 		return x
-    
-
-class MLP(nn.Module):
-    def __init__(self, input_dims, output_dims):
-        super(MLP, self).__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(input_dims, 512),
-            nn.ELU(True),
-            nn.BatchNorm1d(512),
-            nn.Dropout(0.2),
-            nn.Linear(512, 256),
-            nn.ELU(True),
-            nn.BatchNorm1d(256),
-            nn.Dropout(0.2),
-            nn.Linear(256, 128),
-            nn.ELU(True),
-            nn.BatchNorm1d(128),
-            nn.Linear(128, output_dims)
-        )
-
-    def forward(self, x):
-        return self.fc(x)
    
 
 class Decoder(nn.Module):
-    def __init__(self, input_dims=100, hidden_dims=512, output_channels=3, initial_size=7):
+    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=3, initial_size=7):
         super(Decoder, self).__init__()
 
         self.input_dims = input_dims
@@ -302,30 +316,27 @@ class Decoder(nn.Module):
         self.initial_size = initial_size
         
         self.fc = nn.Sequential(
-			nn.Linear(input_dims, hidden_dims // 4),
-			nn.BatchNorm1d(hidden_dims // 4),
+			nn.Linear(input_dims, 5000),
 			nn.ELU(True),
-			nn.Linear(hidden_dims // 4, hidden_dims * initial_size * initial_size),
-			nn.BatchNorm1d(hidden_dims * initial_size * initial_size),
-			nn.ELU(True)
+			nn.Linear(5000, hidden_dims*initial_size*initial_size)
 		)
 
         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
         
         self.upsample = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),            # 7x7 -> 14x14
+            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),            # 1024x7x7 -> 512x14x14
             nn.BatchNorm2d(hidden_dims // 2),
 			nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),       # 14x14 -> 28x28
+            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),       # 512x14x14 -> 256x28x28
             nn.BatchNorm2d(hidden_dims // 4),
 			nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 4, hidden_dims // 8, kernel_size=3, stride=2, padding=1, output_padding=1),       # 28x28 -> 56x56
+            nn.ConvTranspose2d(hidden_dims // 4, hidden_dims // 8, kernel_size=3, stride=2, padding=1, output_padding=1),       # 256x28x28 -> 128x56x56
             nn.BatchNorm2d(hidden_dims // 8),
 			nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),      # 56x56 -> 112x112
+            nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),      # 128x56x56 -> 64x112x112
             nn.BatchNorm2d(hidden_dims // 16),
 			nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),       # 112x112 -> 224x224
+            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),       # 64x112x112 -> 3x224x224
             nn.Sigmoid()
         )
 
@@ -335,57 +346,128 @@ class Decoder(nn.Module):
         x = self.upsample(x)
         return x
     
-    
-class CustomDataset(Dataset):
-    def __init__(self, directory, transform=None):
-        self.directory = directory
+
+class MLP(nn.Module):
+    def __init__(self, input_dims, output_dims):
+        super(MLP, self).__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(input_dims, (input_dims + output_dims) // 2),
+            nn.ELU(True),
+            nn.Linear((input_dims + output_dims) // 2, output_dims)
+        )
+
+    def forward(self, x):
+        return self.fc(x)
+
+
+class CVUSA(Dataset):
+    def __init__(self, root_dir, scenes, transform=None):
+        """
+        root_dir (string): Directory with all the images.
+        scenes (list): List of scene identifiers to include in the dataset.
+        transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.root_dir = root_dir
         self.transform = transform
-        self.image_paths = [os.path.join(directory, fname) for fname in os.listdir(directory) if fname.endswith('.PNG')]    # lists all PNG files in the directory
+        self.image_paths = []
+        for scene in scenes:
+            scene_path = os.path.join(root_dir, f"streetview/cutouts/{scene}")
+            for subdir, _, files in os.walk(scene_path):
+                for file in files:
+                    if file.endswith('.jpg'):
+                        self.image_paths.append(os.path.join(subdir, file))
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
-        image_path = self.image_paths[idx]
-        image = Image.open(image_path).convert('RGB')  # Convert image to RGB
-        
+        img_name = self.image_paths[idx]
+        image = Image.open(img_name)
         if self.transform:
             image = self.transform(image)
-        
+
         return image
     
+
+def get_metadata(fname):
+    if 'streetview' in fname:
+        parts = fname[:-4].rsplit('/', 1)[1].split('_')
+        if len(parts) == 2:
+            lat, lon = parts
+            return lat, lon
+        else:
+            print(f"Unexpected filename format: {fname}")
+            return None, None
+    return None
+
+
+def get_aerial_path(root_dir, lat, lon, zoom):
+    lat_bin = int(float(lat))
+    lon_bin = int(float(lon))
+    return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
+
 
 class PairedImagesDataset(Dataset):
     def __init__(self, root_dir, transform=None):
         """
-        Dataset to load paired images from given directories for aerial and ground images.
+        Dataset to load paired satellite and panorama images.
         Args:
-            root_dir (str): Directory with all the images divided into 'aerial' and 'ground' subdirectories.
+            root_dir (str): Root directory containing the 'streetview' and 'streetview_aerial' subdirectories.
             transform (callable, optional): Optional transform to be applied on a sample.
         """
-        self.root_dir = root_dir
-        self.aerial_dir = os.path.join(root_dir, 'aerial')
-        self.ground_dir = os.path.join(root_dir, 'ground')
+        self.panorama_dir = os.path.join(root_dir, 'streetview', 'panos')
+        self.satellite_dir = os.path.join(root_dir, 'streetview_aerial')
         self.transform = transform
-        self.paired_filenames = [f for f in os.listdir(self.aerial_dir) if os.path.isfile(os.path.join(self.aerial_dir, f))]
 
-        # Debug: Print out the number of files found
-        # print(f"Number of paired files found: {len(self.paired_filenames)}")
+        self.paired_filenames = []
+        for root, _, files in os.walk(self.panorama_dir):
+            for file in files:
+                if file.endswith('.jpg'):
+                    pano_path = os.path.join(root, file)
+                    lat, lon = get_metadata(pano_path)
+                    if lat is None or lon is None:
+                        continue
+                    zoom = 18  # Only consider zoom level 18
+                    sat_path = get_aerial_path(self.satellite_dir, lat, lon, zoom)
+                    if os.path.exists(sat_path):
+                        self.paired_filenames.append((pano_path, sat_path))
+        
         if len(self.paired_filenames) == 0:
-            print(f"Check if the directory paths are correct and accessible: {self.aerial_dir}")
-    
+            print(f"Check if the directory paths are correct and accessible: {self.panorama_dir} and {self.satellite_dir}")
+
     def __len__(self):
         return len(self.paired_filenames)
-    
-    def __getitem__(self, idx):
-        aerial_img_path = os.path.join(self.aerial_dir, self.paired_filenames[idx])
-        ground_img_path = os.path.join(self.ground_dir, self.paired_filenames[idx].replace('drone', 'ground'))
 
-        aerial_image = Image.open(aerial_img_path).convert('RGB')
-        ground_image = Image.open(ground_img_path).convert('RGB')
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.paired_filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
 
         if self.transform:
-            aerial_image = self.transform(aerial_image)
-            ground_image = self.transform(ground_image)
+            pano_image = self.transform(pano_image)
+            sat_image = self.transform(sat_image)
 
-        return aerial_image, ground_image
+        return pano_image, sat_image
+    
+
+# Define the Datasets using sampled filenames
+class SampledPairedImagesDataset(Dataset):
+    def __init__(self, filenames, transform=None):
+        self.filenames = filenames
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
+
+        if self.transform:
+            pano_image = self.transform(pano_image)
+            sat_image = self.transform(sat_image)
+
+        return pano_image, sat_image

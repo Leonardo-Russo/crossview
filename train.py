@@ -11,11 +11,10 @@ from torchvision.transforms.functional import to_tensor, to_pil_image
 import matplotlib.pyplot as plt
 import shutil
 import timm
-from utils2 import *
+from utils import *
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
-
 
 
 # Constants
@@ -24,9 +23,8 @@ image_size = 224            # assuming square images
 hidden_dims = 512           # hidden dimensions
 n_encoded = 5000            # output size for the encoders
 n_phi = 1000                 # size of phi
-batch_size = 64
+batch_size = 128
 shuffle = True
-
 
 # Select device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -60,13 +58,26 @@ transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
+transform_aug = transforms.Compose([
+    transforms.Resize((image_size, image_size)),
+    transforms.CenterCrop((image_size, image_size)),
+    transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(degrees=15),
+    transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.5),
+    transforms.ToTensor()
+])
+
+# Sample paired images
+train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+
 # Define the Datasets
-train_dataset = PairedImagesDataset('/home/lrusso/cvusa', transform=transform)
-val_dataset = PairedImagesDataset('/home/lrusso/cvusa', transform=transform)
+train_dataset = SampledPairedImagesDataset(train_filenames, transform=transform)
+val_dataset = SampledPairedImagesDataset(val_filenames, transform=transform)
 
 # Define the DataLoaders
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
 
 # ----- Training ----- #
@@ -97,7 +108,7 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
         decoder_A2G.train()
         decoder_G2A.train()
         
-        total_loss = 0.0
+        running_loss = 0.0
 
         for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
             images_A, images_G = images_A.to(device), images_G.to(device)
@@ -121,15 +132,15 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
             loss_A = criterion(reconstructed_A, images_A)
             loss_G = criterion(reconstructed_G, images_G)
             total_loss = loss_A + loss_G
+            running_loss += total_loss.item()
 
             optimizer.zero_grad()
             
             # Backward and optimize
             total_loss.backward()
             optimizer.step()
-            total_loss += total_loss.item()
 
-        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {total_loss/len(train_loader):.4f}')
+        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {running_loss/len(train_loader):.4f}')
 
         # Validate the Architecture
         validate(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, val_loader, criterion, epoch, results_path, device)
@@ -172,4 +183,4 @@ def validate(encoder_A, encoder_B, mlp, decoder_A2G, decoder_G2A, loader, criter
     print(f'Validation Loss: {total_val_loss / len(loader):.4f}')
 
 
-train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=10, save_path='CNN-1')
+train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path='CNN-1')
