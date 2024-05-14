@@ -11,7 +11,7 @@ from torchvision.transforms.functional import to_tensor, to_pil_image
 import matplotlib.pyplot as plt
 import shutil
 import timm
-from utils2 import *
+from utils3 import *
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
@@ -60,9 +60,12 @@ transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
+# Sample paired images
+train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+
 # Define the Datasets
-train_dataset = PairedImagesDataset('/home/lrusso/cvusa', transform=transform)
-val_dataset = PairedImagesDataset('/home/lrusso/cvusa', transform=transform)
+train_dataset = SampledPairedImagesDataset(train_filenames, transform=transform)
+val_dataset = SampledPairedImagesDataset(val_filenames, transform=transform)
 
 # Define the DataLoaders
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
