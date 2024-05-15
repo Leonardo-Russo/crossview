@@ -470,4 +470,4 @@ class SampledPairedImagesDataset(Dataset):
             pano_image = self.transform(pano_image)
             sat_image = self.transform(sat_image)
 
-        return pano_image, sat_image
+        return sat_image, pano_image

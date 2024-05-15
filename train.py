@@ -23,7 +23,7 @@ image_size = 224            # assuming square images
 hidden_dims = 512           # hidden dimensions
 n_encoded = 5000            # output size for the encoders
 n_phi = 1000                 # size of phi
-batch_size = 128
+batch_size = 64
 shuffle = True
 
 # Select device
@@ -69,15 +69,15 @@ transform_aug = transforms.Compose([
 ])
 
 # Sample paired images
-train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.1, split_ratio=0.8)
 
 # Define the Datasets
 train_dataset = SampledPairedImagesDataset(train_filenames, transform=transform)
 val_dataset = SampledPairedImagesDataset(val_filenames, transform=transform)
 
 # Define the DataLoaders
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
 
 
 # ----- Training ----- #
@@ -143,7 +143,9 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
         print(f'Epoch {epoch+1}/{epochs}: Training Loss = {running_loss/len(train_loader):.4f}')
 
         # Validate the Architecture
-        validate(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, val_loader, criterion, epoch, results_path, device)
+        val_loss = validate(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, val_loader, criterion, epoch, results_path, device)
+
+
         
     # Save the Models
     torch.save(encoder_A.state_dict(), os.path.join(model_path, f'encoder_A_epoch_{epoch+1}.pth'))
@@ -177,10 +179,12 @@ def validate(encoder_A, encoder_B, mlp, decoder_A2G, decoder_G2A, loader, criter
 
             total_val_loss += total_loss.item()
 
-    # visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=results_path)
-    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=results_path)
+    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial'))
+    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground'))
 
     print(f'Validation Loss: {total_val_loss / len(loader):.4f}')
+
+    return total_val_loss / len(loader)
 
 
 train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path='CNN-1')
