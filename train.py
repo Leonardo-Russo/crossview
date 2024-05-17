@@ -15,72 +15,8 @@ from utils import *
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 from torchvision.utils import make_grid
+import argparse
 
-
-# Constants
-image_channels = 3          # for RGB images
-image_size = 224            # assuming square images
-hidden_dims = 512           # hidden dimensions
-n_encoded = 5000            # output size for the encoders
-n_phi = 1000                 # size of phi
-batch_size = 64
-shuffle = True
-
-# Select device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"using device: {device}")
-
-# Initialize the Architecture
-encoder_A = Encoder(latent_dim=n_encoded).to(device)
-encoder_G = Encoder(latent_dim=n_encoded).to(device)
-mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi).to(device)
-decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
-decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
-print(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A)
-
-# Optimizer and Loss Function
-learning_rate = 1e-5
-params = [
-	{"params": encoder_A.parameters()},
-	{"params": encoder_G.parameters()},
-    {"params": mlp.parameters()},
-    {"params": decoder_A2G.parameters()},
-    {"params": decoder_G2A.parameters()}
-]
-weight_decay = 1e-5
-optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
-criterion = nn.HuberLoss()
-
-# Transformations
-transform = transforms.Compose([
-    transforms.Resize((image_size, image_size)),
-    transforms.CenterCrop((image_size, image_size)),
-    transforms.ToTensor()
-])
-
-transform_aug = transforms.Compose([
-    transforms.Resize((image_size, image_size)),
-    transforms.CenterCrop((image_size, image_size)),
-    transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomRotation(degrees=15),
-    transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.5),
-    transforms.ToTensor()
-])
-
-# Sample paired images
-train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.1, split_ratio=0.8)
-
-# Define the Datasets
-train_dataset = SampledPairedImagesDataset(train_filenames, transform=transform)
-val_dataset = SampledPairedImagesDataset(val_filenames, transform=transform)
-
-# Define the DataLoaders
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
-val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
-
-
-# ----- Training ----- #
 
 def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val_loader, device, criterion, optimizer, epochs=10, save_path='untitled'):
 
@@ -116,13 +52,13 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
             # Encode images A and B
             encoded_A = encoder_A(images_A)
             encoded_G = encoder_G(images_G)
-            # print(f"Encoded A shape: {encoded_A.shape}")
-            # print(f"Encoded G shape: {encoded_G.shape}")
 
             # Concatenate and process through MLP
             phi = mlp(torch.cat((encoded_A, encoded_G), dim=1))
-            # print(f"Phi shape: {phi.shape}")
-            # print(f"Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
+            
+            # # Print shapes for debugging
+            # print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
+                #   f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
 
             # Decode the MLP output into reconstructed images
             reconstructed_A = decoder_G2A(torch.cat((phi, encoded_G), dim=1))
@@ -187,4 +123,80 @@ def validate(encoder_A, encoder_B, mlp, decoder_A2G, decoder_G2A, loader, criter
     return total_val_loss / len(loader)
 
 
-train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path='CNN-1')
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description='Train a model.')
+    parser.add_argument('save_path', type=str, help='Path to save the model and results')
+    args = parser.parse_args()
+
+    # Constants
+    image_channels = 3          # for RGB images
+    image_size = 224            # assuming square images
+    aerial_scaling = 3          # scaling factor for aerial images
+    hidden_dims = 512           # hidden dimensions
+    n_encoded = 1000            # output size for the encoders
+    n_phi = 10                  # size of phi
+    batch_size = 64
+    shuffle = True
+
+    # Select device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"using device: {device}")
+
+    # Initialize the Architecture
+    encoder_A = Encoder(latent_dim=n_encoded).to(device)
+    encoder_G = Encoder(latent_dim=n_encoded).to(device)
+    mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi).to(device)
+    decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
+    decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
+    print(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A)
+
+    # Optimizer and Loss Function
+    learning_rate = 1e-5
+    params = [
+        {"params": encoder_A.parameters()},
+        {"params": encoder_G.parameters()},
+        {"params": mlp.parameters()},
+        {"params": decoder_A2G.parameters()},
+        {"params": decoder_G2A.parameters()}
+    ]
+    weight_decay = 1e-5
+    optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
+    criterion = nn.HuberLoss()
+
+    # Transformations
+    transform_ground = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.CenterCrop((image_size, image_size)),
+        transforms.ToTensor()
+    ])
+
+    transform_aerial = transforms.Compose([
+        transforms.Resize((int(image_size*aerial_scaling), int(image_size*aerial_scaling))),
+        transforms.CenterCrop((image_size, image_size)),
+        transforms.ToTensor()
+    ])
+
+    transform_aug = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.CenterCrop((image_size, image_size)),
+        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(degrees=15),
+        transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.5),
+        transforms.ToTensor()
+    ])
+
+    # Sample paired images
+    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+
+    # Define the Datasets
+    train_dataset = SampledPairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
+    val_dataset = SampledPairedImagesDataset(val_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
+
+    # Define the DataLoaders
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+
+    train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path)

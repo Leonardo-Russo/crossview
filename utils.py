@@ -176,20 +176,6 @@ def psnr(target, output, max_val=1.0):
     return np.mean(scores)
 
 
-def cvusa_sample(dataset_path, scene_percentage=1, split_ratio=0.8):
-    # Setup the absolute path to the dataset
-    all_scenes = [name for name in os.listdir(os.path.join(dataset_path, 'streetview/cutouts')) if os.path.isdir(os.path.join(dataset_path, 'streetview/cutouts', name))]
-    num_scenes_to_select = int(len(all_scenes) * scene_percentage)
-    selected_scenes = random.sample(all_scenes, num_scenes_to_select)
-
-    random.shuffle(selected_scenes)
-    split_point = int(split_ratio * len(selected_scenes))
-    train_scenes = selected_scenes[:split_point]
-    val_scenes = selected_scenes[split_point:]
-
-    return train_scenes, val_scenes
-
-
 def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
@@ -228,6 +214,24 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
     val_filenames = selected_filenames[split_point:]
 
     return train_filenames, val_filenames
+
+
+def get_metadata(fname):
+    if 'streetview' in fname:
+        parts = fname[:-4].rsplit('/', 1)[1].split('_')
+        if len(parts) == 2:
+            lat, lon = parts
+            return lat, lon
+        else:
+            print(f"Unexpected filename format: {fname}")
+            return None, None
+    return None
+
+
+def get_aerial_path(root_dir, lat, lon, zoom):
+    lat_bin = int(float(lat))
+    lon_bin = int(float(lon))
+    return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
 class ViTEncoder(nn.Module):
@@ -360,53 +364,6 @@ class MLP(nn.Module):
         return self.fc(x)
 
 
-class CVUSA(Dataset):
-    def __init__(self, root_dir, scenes, transform=None):
-        """
-        root_dir (string): Directory with all the images.
-        scenes (list): List of scene identifiers to include in the dataset.
-        transform (callable, optional): Optional transform to be applied on a sample.
-        """
-        self.root_dir = root_dir
-        self.transform = transform
-        self.image_paths = []
-        for scene in scenes:
-            scene_path = os.path.join(root_dir, f"streetview/cutouts/{scene}")
-            for subdir, _, files in os.walk(scene_path):
-                for file in files:
-                    if file.endswith('.jpg'):
-                        self.image_paths.append(os.path.join(subdir, file))
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        img_name = self.image_paths[idx]
-        image = Image.open(img_name)
-        if self.transform:
-            image = self.transform(image)
-
-        return image
-    
-
-def get_metadata(fname):
-    if 'streetview' in fname:
-        parts = fname[:-4].rsplit('/', 1)[1].split('_')
-        if len(parts) == 2:
-            lat, lon = parts
-            return lat, lon
-        else:
-            print(f"Unexpected filename format: {fname}")
-            return None, None
-    return None
-
-
-def get_aerial_path(root_dir, lat, lon, zoom):
-    lat_bin = int(float(lat))
-    lon_bin = int(float(lon))
-    return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
-
-
 class PairedImagesDataset(Dataset):
     def __init__(self, root_dir, transform=None):
         """
@@ -453,9 +410,10 @@ class PairedImagesDataset(Dataset):
 
 # Define the Datasets using sampled filenames
 class SampledPairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform=None):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
         self.filenames = filenames
-        self.transform = transform
+        self.transform_aerial = transform_aerial
+        self.transform_ground = transform_ground
 
     def __len__(self):
         return len(self.filenames)
@@ -466,8 +424,10 @@ class SampledPairedImagesDataset(Dataset):
         pano_image = Image.open(pano_img_path).convert('RGB')
         sat_image = Image.open(sat_img_path).convert('RGB')
 
-        if self.transform:
-            pano_image = self.transform(pano_image)
-            sat_image = self.transform(sat_image)
+        if self.transform_aerial:
+            pano_image = self.transform_ground(pano_image)
+
+        if self.transform_ground:
+            sat_image = self.transform_aerial(sat_image)
 
         return sat_image, pano_image
