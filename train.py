@@ -18,13 +18,9 @@ from torchvision.utils import make_grid
 import argparse
 
 
-def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val_loader, device, criterion, optimizer, epochs=10, save_path='untitled'):
+def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled'):
 
-    encoder_A.to(device)
-    encoder_G.to(device)
-    mlp.to(device)
-    decoder_A2G.to(device)
-    decoder_G2A.to(device)
+    model.to(device)
 
     model_path = os.path.join('models', save_path)
     metrics_path = os.path.join('models', save_path, 'metrics')
@@ -33,36 +29,25 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
     os.makedirs(model_path, exist_ok=True)
     os.makedirs(metrics_path, exist_ok=True)
     os.makedirs(results_path, exist_ok=True)
+
     save_dataset_samples(train_dataloader, os.path.join(model_path, 'training_samples.png'), num_images=16, title='Training Samples')
     save_dataset_samples(val_dataloader, os.path.join(model_path, 'validation_samples.png'), num_images=16, title='Validation Samples')
 
-      
+    train_losses = []
+    val_losses = []
+
     for epoch in range(epochs):
-        encoder_A.train()
-        encoder_G.train()
-        mlp.train()
-        decoder_A2G.train()
-        decoder_G2A.train()
         
+        model.train()
         running_loss = 0.0
 
         for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
+
+            # Get images on device
             images_A, images_G = images_A.to(device), images_G.to(device)
 
-            # Encode images A and B
-            encoded_A = encoder_A(images_A)
-            encoded_G = encoder_G(images_G)
-
-            # Concatenate and process through MLP
-            phi = mlp(torch.cat((encoded_A, encoded_G), dim=1))
-            
-            # # Print shapes for debugging
-            # print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
-                #   f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
-
-            # Decode the MLP output into reconstructed images
-            reconstructed_A = decoder_G2A(torch.cat((phi, encoded_G), dim=1))
-            reconstructed_G = decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+            # Forward Pass
+            reconstructed_A, reconstructed_G = model(images_A, images_G)
 
             # Compute loss for both reconstructions
             loss_A = criterion(reconstructed_A, images_A)
@@ -70,57 +55,56 @@ def train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_loader, val
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
 
+            # Reset Gradients
             optimizer.zero_grad()
             
-            # Backward and optimize
+            # Backward Propagation and Optimization Step
             total_loss.backward()
             optimizer.step()
 
-        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {running_loss/len(train_loader):.4f}')
+        train_loss = running_loss / len(train_loader)
+        train_losses.append(train_loss)
+        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {train_loss:.4f}')    
 
-        # Validate the Architecture
-        val_loss = validate(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, val_loader, criterion, epoch, results_path, device)
+        # Validation
+        val_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
+        val_losses.append(val_loss)
+
+        # Update the plot with the current losses
+        update_plot(epoch + 1, train_losses, val_losses, metrics_path)
+
+    # Save the Model
+    torch.save(model.state_dict(), os.path.join(model_path, f'crossview_epoch_{epoch+1}.pth'))
 
 
-        
-    # Save the Models
-    torch.save(encoder_A.state_dict(), os.path.join(model_path, f'encoder_A_epoch_{epoch+1}.pth'))
-    torch.save(encoder_G.state_dict(), os.path.join(model_path, f'encoder_B_epoch_{epoch+1}.pth'))
-    torch.save(mlp.state_dict(), os.path.join(model_path, f'mlp_epoch_{epoch+1}.pth'))
-    torch.save(decoder_A2G.state_dict(), os.path.join(model_path, f'decoder_A2G_epoch_{epoch+1}.pth'))
-    torch.save(decoder_G2A.state_dict(), os.path.join(model_path, f'decoder_G2A_epoch_{epoch+1}.pth'))
-
-
-def validate(encoder_A, encoder_B, mlp, decoder_A2G, decoder_G2A, loader, criterion, epoch, results_path, device):
-    encoder_A.eval()
-    encoder_B.eval()
-    mlp.eval()
-    decoder_A2G.eval()
-    decoder_G2A.eval()
-    total_val_loss = 0
+def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
+    
+    model.eval()
+    val_loss = 0
 
     with torch.no_grad():
-        for images_A, images_G in loader:
+        for images_A, images_G in val_loader:
+
+            # Get images on device
             images_A, images_G = images_A.to(device), images_G.to(device)
 
-            encoded_A = encoder_A(images_A)
-            encoded_G = encoder_G(images_G)
-            phi = mlp(torch.cat((encoded_A, encoded_G), dim=1))
-            reconstructed_A = decoder_G2A(torch.cat((phi, encoded_G), dim=1))
-            reconstructed_G = decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+            # Forward Pass
+            reconstructed_A, reconstructed_G = model(images_A, images_G)
 
+            # Compute loss for both reconstructions
             loss_A = criterion(reconstructed_A, images_A)
             loss_G = criterion(reconstructed_G, images_G)
             total_loss = loss_A + loss_G
+            val_loss += total_loss.item()
 
-            total_val_loss += total_loss.item()
+    val_avg_loss = val_loss / len(val_loader)
+
+    print(f'Epoch {epoch+1}/{epochs}: Validation Loss = {val_avg_loss:.4f}')
 
     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial'))
     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground'))
 
-    print(f'Validation Loss: {total_val_loss / len(loader):.4f}')
-
-    return total_val_loss / len(loader)
+    return val_avg_loss
 
 
 
@@ -145,22 +129,12 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    encoder_A = Encoder(latent_dim=n_encoded).to(device)
-    encoder_G = Encoder(latent_dim=n_encoded).to(device)
-    mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi).to(device)
-    decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
-    decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
-    print(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A)
+    model = CrossView(n_phi, n_encoded, hidden_dims).to(device)
+    print(model)
 
     # Optimizer and Loss Function
     learning_rate = 1e-5
-    params = [
-        {"params": encoder_A.parameters()},
-        {"params": encoder_G.parameters()},
-        {"params": mlp.parameters()},
-        {"params": decoder_A2G.parameters()},
-        {"params": decoder_G2A.parameters()}
-    ]
+    params = [{"params": model.parameters()}]
     weight_decay = 1e-5
     optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.HuberLoss()
@@ -171,6 +145,7 @@ if __name__ == '__main__':
         transforms.CenterCrop((image_size, image_size)),
         transforms.ToTensor()
     ])
+
 
     transform_aerial = transforms.Compose([
         transforms.Resize((int(image_size*aerial_scaling), int(image_size*aerial_scaling))),
@@ -196,7 +171,7 @@ if __name__ == '__main__':
     val_dataset = SampledPairedImagesDataset(val_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
 
     # Define the DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
-    train(encoder_A, encoder_G, mlp, decoder_A2G, decoder_G2A, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path)
+    train(model, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path)

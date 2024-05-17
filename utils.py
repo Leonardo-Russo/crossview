@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import os
 from PIL import Image
@@ -216,6 +217,19 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
     return train_filenames, val_filenames
 
 
+def update_plot(epoch, train_losses, val_losses, save_path):
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(1, epoch + 1), train_losses, label='Training Loss')
+    plt.plot(range(1, epoch + 1), val_losses, label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and Validation Loss over Epochs')
+    plt.grid(True)
+    plt.savefig(os.path.join(save_path, 'loss_plot.png'))
+    plt.close()
+
+
 def get_metadata(fname):
     if 'streetview' in fname:
         parts = fname[:-4].rsplit('/', 1)[1].split('_')
@@ -362,6 +376,22 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.fc(x)
+    
+
+class AttentionModule(nn.Module):
+    def __init__(self, input_channels, attention_dim):
+        super(AttentionModule, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels, attention_dim, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(attention_dim, 1, kernel_size=1)
+    
+    def forward(self, img_aerial, img_ground):
+        # Concatenate along the channel dimension
+        combined_features = torch.cat((img_aerial, img_ground), dim=1)
+        attention = F.relu(self.conv1(combined_features))
+        attention = torch.sigmoid(self.conv2(attention))
+        attended_features = img_aerial * attention
+        return attended_features, attention
+
 
 
 class PairedImagesDataset(Dataset):
@@ -431,3 +461,35 @@ class SampledPairedImagesDataset(Dataset):
             sat_image = self.transform_aerial(sat_image)
 
         return sat_image, pano_image
+    
+
+class CrossView(nn.Module):
+    def __init__(self, n_phi, n_encoded, hidden_dims, device=None, debug=False):
+        super(CrossView, self).__init__()
+
+        self.encoder_A = Encoder(latent_dim=n_encoded)
+        self.encoder_G = Encoder(latent_dim=n_encoded)
+        self.mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi)
+        self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
+        self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
+        self.debug = debug
+    
+    def forward(self, images_A, images_G):
+
+        # Encode images A and B
+        encoded_A = self.encoder_A(images_A)
+        encoded_G = self.encoder_G(images_G)
+
+        # Concatenate and process through MLP
+        phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=1))
+
+        # Decode the MLP output into reconstructed images
+        reconstructed_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
+        reconstructed_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+
+        # Print shapes for debugging
+        if self.debug:
+            print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
+                  f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
+            
+        return reconstructed_A, reconstructed_G
