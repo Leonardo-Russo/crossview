@@ -378,19 +378,20 @@ class MLP(nn.Module):
         return self.fc(x)
     
 
-class AttentionModule(nn.Module):
-    def __init__(self, input_channels, attention_dim):
-        super(AttentionModule, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, attention_dim, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(attention_dim, 1, kernel_size=1)
+class Attention(nn.Module):
+    def __init__(self, n_encoded, n_phi, image_size):
+        super(Attention, self).__init__()
+        self.fc1 = nn.Linear(n_encoded + n_phi, 1000)
+        self.fc2 = nn.Linear(1000, image_size * image_size)
+        self.image_size = image_size
     
-    def forward(self, img_aerial, img_ground):
-        # Concatenate along the channel dimension
-        combined_features = torch.cat((img_aerial, img_ground), dim=1)
-        attention = F.relu(self.conv1(combined_features))
-        attention = torch.sigmoid(self.conv2(attention))
-        attended_features = img_aerial * attention
-        return attended_features, attention
+    def forward(self, encoded_image, phi):
+        combined = torch.cat((encoded_image, phi), dim=1)
+        attention = torch.relu(self.fc1(combined))
+        attention = torch.sigmoid(self.fc2(attention))
+        attention = attention.view(-1, 1, self.image_size, self.image_size)
+        return attention
+
 
 
 
@@ -464,7 +465,7 @@ class SampledPairedImagesDataset(Dataset):
     
 
 class CrossView(nn.Module):
-    def __init__(self, n_phi, n_encoded, hidden_dims, device=None, debug=False):
+    def __init__(self, n_phi, n_encoded, hidden_dims, image_size, debug=False):
         super(CrossView, self).__init__()
 
         self.encoder_A = Encoder(latent_dim=n_encoded)
@@ -472,6 +473,8 @@ class CrossView(nn.Module):
         self.mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi)
         self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
         self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
+        self.attention = Attention(n_encoded, n_phi, image_size)
+        self.image_size = image_size
         self.debug = debug
     
     def forward(self, images_A, images_G):
@@ -483,6 +486,10 @@ class CrossView(nn.Module):
         # Concatenate and process through MLP
         phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=1))
 
+        # Compute Attention Maps
+        attention_A = self.attention(encoded_A, phi)
+        attention_G = self.attention(encoded_G, phi)
+
         # Decode the MLP output into reconstructed images
         reconstructed_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
         reconstructed_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
@@ -492,4 +499,4 @@ class CrossView(nn.Module):
             print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
                   f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
             
-        return reconstructed_A, reconstructed_G
+        return reconstructed_A, reconstructed_G, attention_A, attention_G

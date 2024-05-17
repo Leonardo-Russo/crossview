@@ -47,11 +47,23 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
-            reconstructed_A, reconstructed_G = model(images_A, images_G)
+            reconstructed_A, reconstructed_G, attention_A, attention_G = model(images_A, images_G)
 
-            # Compute loss for both reconstructions
-            loss_A = criterion(reconstructed_A, images_A)
-            loss_G = criterion(reconstructed_G, images_G)
+            # Compute pixel-wise loss maps
+            loss_map_A = torch.abs(reconstructed_A - images_A)
+            loss_map_G = torch.abs(reconstructed_G - images_G)
+
+            # Resize Attention into Image Size Map
+            attention_map_A = F.interpolate(attention_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_G = F.interpolate(attention_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+
+            # Apply Attention to Loss Maps
+            attended_loss_map_A = loss_map_A * attention_map_A
+            attended_loss_map_G = loss_map_G * attention_map_G
+
+            # Compute Total Loss
+            loss_A = torch.mean(attended_loss_map_A)
+            loss_G = torch.mean(attended_loss_map_G)
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
 
@@ -89,11 +101,23 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
-            reconstructed_A, reconstructed_G = model(images_A, images_G)
+            reconstructed_A, reconstructed_G, attention_A, attention_G = model(images_A, images_G)
 
-            # Compute loss for both reconstructions
-            loss_A = criterion(reconstructed_A, images_A)
-            loss_G = criterion(reconstructed_G, images_G)
+            # Compute pixel-wise loss maps
+            loss_map_A = torch.abs(reconstructed_A - images_A)
+            loss_map_G = torch.abs(reconstructed_G - images_G)
+
+            # Resize Attention into Image Size Map
+            attention_map_A = F.interpolate(attention_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_G = F.interpolate(attention_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+
+            # Apply Attention to Loss Maps
+            attended_loss_map_A = loss_map_A * attention_map_A
+            attended_loss_map_G = loss_map_G * attention_map_G
+
+            # Compute Total Loss
+            loss_A = torch.mean(attended_loss_map_A)
+            loss_G = torch.mean(attended_loss_map_G)
             total_loss = loss_A + loss_G
             val_loss += total_loss.item()
 
@@ -121,7 +145,7 @@ if __name__ == '__main__':
     hidden_dims = 512           # hidden dimensions
     n_encoded = 1000            # output size for the encoders
     n_phi = 10                  # size of phi
-    batch_size = 64
+    batch_size = 32
     shuffle = True
 
     # Select device
@@ -129,7 +153,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    model = CrossView(n_phi, n_encoded, hidden_dims).to(device)
+    model = CrossView(n_phi, n_encoded, hidden_dims, image_size).to(device)
     print(model)
 
     # Optimizer and Loss Function
@@ -171,7 +195,7 @@ if __name__ == '__main__':
     val_dataset = SampledPairedImagesDataset(val_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
 
     # Define the DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=4)
 
     train(model, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path)
