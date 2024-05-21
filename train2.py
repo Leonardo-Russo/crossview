@@ -10,13 +10,10 @@ from tqdm import tqdm
 from torchvision.transforms.functional import to_tensor, to_pil_image
 import matplotlib.pyplot as plt
 import shutil
-import timm
-from utils import *
+from utils2 import *
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
-from torchvision.utils import make_grid
 import argparse
-
 
 def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled'):
 
@@ -32,13 +29,14 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     os.makedirs(os.path.join(results_path, 'aerial'), exist_ok=True)
     os.makedirs(os.path.join(results_path, 'ground'), exist_ok=True)
 
-    save_dataset_samples(train_dataloader, os.path.join(model_path, 'training_samples.png'), num_images=16, title='Training Samples')
-    save_dataset_samples(val_dataloader, os.path.join(model_path, 'validation_samples.png'), num_images=16, title='Validation Samples')
+    save_dataset_samples(train_loader, os.path.join(model_path, 'training_samples.png'), num_images=16, title='Training Samples')
+    save_dataset_samples(val_loader, os.path.join(model_path, 'validation_samples.png'), num_images=16, title='Validation Samples')
 
     train_losses = []
     val_losses = []
     best_val_loss = np.inf
     patience_counter = 0
+    best_model_path = None
 
     for epoch in range(epochs):
         
@@ -57,17 +55,25 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             loss_map_A = torch.abs(reconstructed_A - images_A)
             loss_map_G = torch.abs(reconstructed_G - images_G)
 
+            # Sum attention maps across heads to get a single channel
+            attention_map_A = attention_A.sum(dim=1, keepdim=True)
+            attention_map_G = attention_G.sum(dim=1, keepdim=True)
+
             # Resize Attention into Image Size Map
-            attention_map_A = F.interpolate(attention_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
-            attention_map_G = F.interpolate(attention_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_A = F.interpolate(attention_map_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_G = F.interpolate(attention_map_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+
+            # Expand attention maps to match the number of channels in loss maps
+            attention_map_A = attention_map_A.expand_as(loss_map_A)
+            attention_map_G = attention_map_G.expand_as(loss_map_G)
 
             # Apply Attention to Loss Maps
             attended_loss_map_A = loss_map_A * attention_map_A
             attended_loss_map_G = loss_map_G * attention_map_G
 
-            # Compute Total Loss
-            loss_A = torch.mean(attended_loss_map_A)
-            loss_G = torch.mean(attended_loss_map_G)
+            # Compute Total Loss using HuberLoss
+            loss_A = criterion(attended_loss_map_A, torch.zeros_like(attended_loss_map_A))
+            loss_G = criterion(attended_loss_map_G, torch.zeros_like(attended_loss_map_G))
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
 
@@ -80,7 +86,6 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
 
         train_loss = running_loss / len(train_loader)
         train_losses.append(train_loss)
-        # print(f'Epoch {epoch+1}/{epochs}: Training Loss = {train_loss:.4f}')    
 
         # Validation
         val_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
@@ -110,7 +115,7 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     if best_model_path:
         print(f'Loading the model from {best_model_path}...')
         model.load_state_dict(torch.load(best_model_path))
-        final_val_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
+        final_val_loss = validate(model, val_loader, criterion, "best", epochs, results_path, device)
         print(f'Best Validation Loss: {final_val_loss:.4f}')
 
 
@@ -132,37 +137,98 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             loss_map_A = torch.abs(reconstructed_A - images_A)
             loss_map_G = torch.abs(reconstructed_G - images_G)
 
+            # Sum attention maps across heads to get a single channel
+            attention_map_A = attention_A.sum(dim=1, keepdim=True)
+            attention_map_G = attention_G.sum(dim=1, keepdim=True)
+
             # Resize Attention into Image Size Map
-            attention_map_A = F.interpolate(attention_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
-            attention_map_G = F.interpolate(attention_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_A = F.interpolate(attention_map_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+            attention_map_G = F.interpolate(attention_map_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+
+            # Expand attention maps to match the number of channels in loss maps
+            attention_map_A = attention_map_A.expand_as(loss_map_A)
+            attention_map_G = attention_map_G.expand_as(loss_map_G)
 
             # Apply Attention to Loss Maps
             attended_loss_map_A = loss_map_A * attention_map_A
             attended_loss_map_G = loss_map_G * attention_map_G
 
-            # Compute Total Loss
-            loss_A = torch.mean(attended_loss_map_A)
-            loss_G = torch.mean(attended_loss_map_G)
+            # Compute Total Loss using HuberLoss
+            loss_A = criterion(attended_loss_map_A, torch.zeros_like(attended_loss_map_A))
+            loss_G = criterion(attended_loss_map_G, torch.zeros_like(attended_loss_map_G))
             total_loss = loss_A + loss_G
             val_loss += total_loss.item()
 
+            # Visualize Attention Maps for a batch during validation
+            if epoch != "best":
+                visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
+                visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
+                visualize_attention_batch(images_A, attention_map_A, epoch, os.path.join(results_path, 'attention'), 'aerial')
+                visualize_attention_batch(images_G, attention_map_G, epoch, os.path.join(results_path, 'attention'), 'ground')
+            else:
+                visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
+                visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
+                visualize_attention_batch(images_A, attention_map_A, epoch, os.path.join(results_path, 'attention'), 'aerial_best')
+                visualize_attention_batch(images_G, attention_map_G, epoch, os.path.join(results_path, 'attention'), 'ground_best')
+
     val_avg_loss = val_loss / len(val_loader)
-
-    # print(f'Epoch {epoch+1}/{epochs}: Validation Loss = {val_avg_loss:.4f}')
-
-    # Save the reconstructed images
-    if epoch == "best":
-        save_path_A = os.path.join(results_path, 'aerial', f'best_reconstruction.png')
-        save_path_G = os.path.join(results_path, 'ground', f'best_reconstruction.png')
-    else:
-        save_path_A = os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png')
-        save_path_G = os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png')
-
-    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=save_path_A)
-    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=save_path_G)
-
     return val_avg_loss
 
+
+# def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
+    
+#     model.eval()
+#     val_loss = 0
+
+#     with torch.no_grad():
+#         for images_A, images_G in val_loader:
+
+#             # Get images on device
+#             images_A, images_G = images_A.to(device), images_G.to(device)
+
+#             # Forward Pass
+#             reconstructed_A, reconstructed_G, attention_A, attention_G = model(images_A, images_G)
+
+#             # Compute pixel-wise loss maps
+#             loss_map_A = torch.abs(reconstructed_A - images_A)
+#             loss_map_G = torch.abs(reconstructed_G - images_G)
+
+#             # Sum attention maps across heads to get a single channel
+#             attention_map_A = attention_A.sum(dim=1, keepdim=True)
+#             attention_map_G = attention_G.sum(dim=1, keepdim=True)
+
+#             # Resize Attention into Image Size Map
+#             attention_map_A = F.interpolate(attention_map_A, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+#             attention_map_G = F.interpolate(attention_map_G, size=(model.image_size, model.image_size), mode='bilinear', align_corners=False)
+
+#             # Expand attention maps to match the number of channels in loss maps
+#             attention_map_A = attention_map_A.expand_as(loss_map_A)
+#             attention_map_G = attention_map_G.expand_as(loss_map_G)
+
+#             # Apply Attention to Loss Maps
+#             attended_loss_map_A = loss_map_A * attention_map_A
+#             attended_loss_map_G = loss_map_G * attention_map_G
+
+#             # Compute Total Loss using HuberLoss
+#             loss_A = criterion(attended_loss_map_A, torch.zeros_like(attended_loss_map_A))
+#             loss_G = criterion(attended_loss_map_G, torch.zeros_like(attended_loss_map_G))
+#             total_loss = loss_A + loss_G
+#             val_loss += total_loss.item()
+
+#     val_avg_loss = val_loss / len(val_loader)
+
+#     # Save the reconstructed images
+#     if epoch == "best":
+#         save_path_A = os.path.join(results_path, 'aerial', f'best_reconstruction.png')
+#         save_path_G = os.path.join(results_path, 'ground', f'best_reconstruction.png')
+#     else:
+#         save_path_A = os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png')
+#         save_path_G = os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png')
+
+#     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=save_path_A)
+#     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=save_path_G)
+
+#     return val_avg_loss
 
 
 if __name__ == '__main__':
@@ -176,9 +242,9 @@ if __name__ == '__main__':
     image_size = 224                        # assuming square images
     aerial_scaling = 3                      # scaling factor for aerial images
     hidden_dims = 512                       # hidden dimensions
-    n_encoded = 1000                        # output size for the encoders
+    n_encoded = 1024                        # output size for the encoders
     n_phi = 10                              # size of phi
-    attention_size = image_size // 2        # size of attention
+    n_heads = 8                             # number of attention heads
     batch_size = 64
     shuffle = True
 
@@ -187,7 +253,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    model = CrossView(n_phi, n_encoded, hidden_dims, attention_size, image_size).to(device)
+    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, n_heads).to(device)
     print(model)
 
     # Optimizer and Loss Function

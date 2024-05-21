@@ -246,6 +246,143 @@ def get_aerial_path(root_dir, lat, lon, zoom):
     return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
+def visualize_attention_map(image, attention_map, save_path=None, title=None):
+    """
+    Visualize the attention map over the image.
+
+    Parameters:
+    - image (torch.Tensor): The original image tensor.
+    - attention_map (torch.Tensor): The attention map tensor.
+    - save_path (str, optional): Path to save the resulting plot. If None, the plot is displayed.
+    - title (str, optional): Title for the plot.
+    """
+    # Convert tensors to numpy arrays
+    image_np = image.cpu().numpy().transpose((1, 2, 0))
+    attention_map_np = attention_map.cpu().numpy().transpose((1, 2, 0))
+
+    # Normalize the image for visualization
+    image_np = (image_np - image_np.min()) / (image_np.max() - image_np.min())
+
+    # Rescale attention map to match the image range
+    attention_map_np = (attention_map_np - attention_map_np.min()) / (attention_map_np.max() - attention_map_np.min())
+
+    # Overlay attention map on the image
+    overlay = image_np * 0.6 + attention_map_np * 0.4
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(overlay)
+    if title:
+        plt.title(title)
+    plt.axis('off')
+
+    if save_path:
+        plt.savefig(save_path)
+    else:
+        plt.show()
+
+    plt.close()
+
+
+def visualize_attention_batch(images, attention_maps, epoch, save_dir, prefix, num_images=16):
+    """
+    Visualize a batch of attention maps.
+
+    Parameters:
+    - images (torch.Tensor): The original images tensor.
+    - attention_maps (torch.Tensor): The attention maps tensor.
+    - epoch (int): Current epoch number for titling the plot.
+    - save_dir (str): Directory to save the resulting plots.
+    - prefix (str): Prefix for the saved filenames.
+    - num_images (int): Number of images to display from the batch.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    num_images = min(num_images, images.size(0), attention_maps.size(0))
+
+    # Randomly select indices for display
+    indices = torch.randperm(images.size(0))[:num_images]
+
+    # Select the images and attention maps from the tensors
+    selected_images = images[indices].cpu()
+    selected_attention_maps = attention_maps[indices].cpu()
+
+    for i in range(num_images):
+        img = selected_images[i]
+        attn_map = selected_attention_maps[i]
+        
+        save_path = os.path.join(save_dir, f'{prefix}_epoch_{epoch + 1}_image_{i + 1}.png')
+        visualize_attention_map(img, attn_map, save_path, title=f'{prefix.capitalize()} Attention Map Epoch {epoch + 1} - Image {i + 1}')
+
+
+class PairedImagesDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        """
+        Dataset to load paired satellite and panorama images.
+        Args:
+            root_dir (str): Root directory containing the 'streetview' and 'streetview_aerial' subdirectories.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.panorama_dir = os.path.join(root_dir, 'streetview', 'panos')
+        self.satellite_dir = os.path.join(root_dir, 'streetview_aerial')
+        self.transform = transform
+
+        self.paired_filenames = []
+        for root, _, files in os.walk(self.panorama_dir):
+            for file in files:
+                if file.endswith('.jpg'):
+                    pano_path = os.path.join(root, file)
+                    lat, lon = get_metadata(pano_path)
+                    if lat is None or lon is None:
+                        continue
+                    zoom = 18  # Only consider zoom level 18
+                    sat_path = get_aerial_path(self.satellite_dir, lat, lon, zoom)
+                    if os.path.exists(sat_path):
+                        self.paired_filenames.append((pano_path, sat_path))
+        
+        if len(self.paired_filenames) == 0:
+            print(f"Check if the directory paths are correct and accessible: {self.panorama_dir} and {self.satellite_dir}")
+
+    def __len__(self):
+        return len(self.paired_filenames)
+
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.paired_filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
+
+        if self.transform:
+            pano_image = self.transform(pano_image)
+            sat_image = self.transform(sat_image)
+
+        return pano_image, sat_image
+    
+
+# Define the Datasets using sampled filenames
+class SampledPairedImagesDataset(Dataset):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
+        self.filenames = filenames
+        self.transform_aerial = transform_aerial
+        self.transform_ground = transform_ground
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
+
+        if self.transform_aerial:
+            pano_image = self.transform_ground(pano_image)
+
+        if self.transform_ground:
+            sat_image = self.transform_aerial(sat_image)
+
+        return sat_image, pano_image
+
+
 class ViTEncoder(nn.Module):
     def __init__(self, out_features=100, model_name='dinov2_vits14_reg_lc'):
         super(ViTEncoder, self).__init__()
@@ -376,94 +513,95 @@ class MLP(nn.Module):
         return self.fc(x)
     
 
-class Attention(nn.Module):
-    def __init__(self, n_encoded, n_phi, attention_size=224):
-        super(Attention, self).__init__()
-        self.fc1 = nn.Linear(n_encoded + n_phi, 1000)
-        self.fc2 = nn.Linear(1000, attention_size * attention_size)
-        self.attention_size = attention_size
-    
-    def forward(self, encoded_image, phi):
-        combined = torch.cat((encoded_image, phi), dim=1)
-        attention = torch.relu(self.fc1(combined))
-        attention = torch.sigmoid(self.fc2(attention))
-        attention = attention.view(-1, 1, self.attention_size, self.attention_size)
-        return attention
-
-
-
-
-class PairedImagesDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        """
-        Dataset to load paired satellite and panorama images.
-        Args:
-            root_dir (str): Root directory containing the 'streetview' and 'streetview_aerial' subdirectories.
-            transform (callable, optional): Optional transform to be applied on a sample.
-        """
-        self.panorama_dir = os.path.join(root_dir, 'streetview', 'panos')
-        self.satellite_dir = os.path.join(root_dir, 'streetview_aerial')
-        self.transform = transform
-
-        self.paired_filenames = []
-        for root, _, files in os.walk(self.panorama_dir):
-            for file in files:
-                if file.endswith('.jpg'):
-                    pano_path = os.path.join(root, file)
-                    lat, lon = get_metadata(pano_path)
-                    if lat is None or lon is None:
-                        continue
-                    zoom = 18  # Only consider zoom level 18
-                    sat_path = get_aerial_path(self.satellite_dir, lat, lon, zoom)
-                    if os.path.exists(sat_path):
-                        self.paired_filenames.append((pano_path, sat_path))
+# class ScaledDotProductAttention(nn.Module):
+#     def __init__(self, d_model, n_heads):
+#         super(ScaledDotProductAttention, self).__init__()
+#         self.d_model = d_model
+#         self.n_heads = n_heads
+#         self.head_dim = d_model // n_heads
         
-        if len(self.paired_filenames) == 0:
-            print(f"Check if the directory paths are correct and accessible: {self.panorama_dir} and {self.satellite_dir}")
+#         assert (
+#             self.head_dim * n_heads == d_model
+#         ), "d_model must be divisible by n_heads"
+        
+#         self.qkv_linear = nn.Linear(d_model, 3 * d_model)
+#         self.fc_out = nn.Linear(d_model, d_model)
+#         self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])).to('cuda' if torch.cuda.is_available() else 'cpu')
+        
+#     def forward(self, query, key, value, mask=None):
+#         N, seq_len, d_model = query.shape
+        
+#         QKV = self.qkv_linear(query)  # QKV -> (N, seq_len, 3*d_model)
+#         Q, K, V = QKV.chunk(3, dim=2)
+        
+#         Q = Q.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+#         K = K.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+#         V = V.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        
+#         scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        
+#         if mask is not None:
+#             scores = scores.masked_fill(mask == 0, float('-inf'))
+            
+#         attention = torch.softmax(scores, dim=-1)
+        
+#         out = torch.matmul(attention, V)
+#         out = out.transpose(1, 2).contiguous().view(N, seq_len, d_model)
+        
+#         return self.fc_out(out), attention
+        
 
-    def __len__(self):
-        return len(self.paired_filenames)
+# class Attention(nn.Module):
+#     def __init__(self, d_model, n_heads):
+#         super(Attention, self).__init__()
+#         self.attention = ScaledDotProductAttention(d_model, n_heads)
+        
+#     def forward(self, query, key, value, mask=None):
+#         out, attn = self.attention(query, key, value, mask)
+#         return out, attn
+        
 
-    def __getitem__(self, idx):
-        pano_img_path, sat_img_path = self.paired_filenames[idx]
+class Attention(nn.Module):
+    def __init__(self, n_encoded, n_heads):
+        super(Attention, self).__init__()
+        self.n_encoded = n_encoded
+        self.n_heads = n_heads
+        self.head_dim = n_encoded // n_heads
+        
+        assert (
+            self.head_dim * n_heads == n_encoded
+        ), "n_encoded must be divisible by n_heads"
+        
+        self.qkv_linear = nn.Linear(n_encoded, 3*n_encoded)
+        self.fc_out = nn.Linear(n_encoded, n_encoded)
+        self.scale = torch.sqrt(torch.FloatTensor([self.head_dim])).to('cuda' if torch.cuda.is_available() else 'cpu')
+        
+    def forward(self, query, key, value, mask=None):
+        N, seq_len, n_encoded = query.shape
+        
+        QKV = self.qkv_linear(query)  # QKV -> (N, seq_len, 3*d_model)
+        Q, K, V = QKV.chunk(3, dim=2)
+        
+        Q = Q.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        K = K.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        V = V.view(N, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float('-inf'))
+            
+        attention = torch.softmax(scores, dim=-1)
+        
+        out = torch.matmul(attention, V)
+        out = out.transpose(1, 2).contiguous().view(N, seq_len, n_encoded)
+        
+        return self.fc_out(out), attention
 
-        pano_image = Image.open(pano_img_path).convert('RGB')
-        sat_image = Image.open(sat_img_path).convert('RGB')
 
-        if self.transform:
-            pano_image = self.transform(pano_image)
-            sat_image = self.transform(sat_image)
-
-        return pano_image, sat_image
-    
-
-# Define the Datasets using sampled filenames
-class SampledPairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
-        self.filenames = filenames
-        self.transform_aerial = transform_aerial
-        self.transform_ground = transform_ground
-
-    def __len__(self):
-        return len(self.filenames)
-
-    def __getitem__(self, idx):
-        pano_img_path, sat_img_path = self.filenames[idx]
-
-        pano_image = Image.open(pano_img_path).convert('RGB')
-        sat_image = Image.open(sat_img_path).convert('RGB')
-
-        if self.transform_aerial:
-            pano_image = self.transform_ground(pano_image)
-
-        if self.transform_ground:
-            sat_image = self.transform_aerial(sat_image)
-
-        return sat_image, pano_image
-    
 
 class CrossView(nn.Module):
-    def __init__(self, n_phi, n_encoded, hidden_dims, attention_size, image_size, debug=False):
+    def __init__(self, n_phi, n_encoded, hidden_dims, image_size, n_heads=8, debug=False):
         super(CrossView, self).__init__()
 
         self.encoder_A = Encoder(latent_dim=n_encoded)
@@ -471,31 +609,38 @@ class CrossView(nn.Module):
         self.mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi)
         self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
         self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
-        self.attention = Attention(n_encoded, n_phi, attention_size)
-        self.attention_size = attention_size
+        self.attention = Attention(n_encoded, n_heads)
         self.image_size = image_size
         self.debug = debug
     
     def forward(self, images_A, images_G):
 
-        # Encode images A and B
+        # Encode images A and G
         encoded_A = self.encoder_A(images_A)
         encoded_G = self.encoder_G(images_G)
 
-        # Concatenate and process through MLP
-        phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=1))
+        # Add a sequence dimension
+        encoded_A = encoded_A.unsqueeze(1)
+        encoded_G = encoded_G.unsqueeze(1)
 
-        # Compute Attention Maps
-        attention_A = self.attention(encoded_A, phi)
-        attention_G = self.attention(encoded_G, phi)
+        # Concatenate and process through MLP
+        phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=-1)).squeeze(1)
+
+        # Compute Attention
+        attended_encoded_A, attn_weights_A = self.attention(encoded_A, encoded_G, encoded_G)
+        attended_encoded_G, attn_weights_G = self.attention(encoded_G, encoded_A, encoded_A)
+
+        # Remove sequence dimension
+        attended_encoded_A = attended_encoded_A.squeeze(1)
+        attended_encoded_G = attended_encoded_G.squeeze(1)
 
         # Decode the MLP output into reconstructed images
-        reconstructed_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
-        reconstructed_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+        reconstructed_A = self.decoder_G2A(torch.cat((phi, attended_encoded_G), dim=1))
+        reconstructed_G = self.decoder_A2G(torch.cat((phi, attended_encoded_A), dim=1))
 
         # Print shapes for debugging
         if self.debug:
             print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
-                  f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
+                  f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, attended_encoded_G), dim=1).shape}")
             
-        return reconstructed_A, reconstructed_G, attention_A, attention_G
+        return reconstructed_A, reconstructed_G, attn_weights_A, attn_weights_G
