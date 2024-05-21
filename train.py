@@ -35,6 +35,8 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
 
     train_losses = []
     val_losses = []
+    best_val_loss = np.inf
+    patience_counter = 0
 
     for epoch in range(epochs):
         
@@ -76,17 +78,26 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
 
         train_loss = running_loss / len(train_loader)
         train_losses.append(train_loss)
-        print(f'Epoch {epoch+1}/{epochs}: Training Loss = {train_loss:.4f}')    
+        # print(f'Epoch {epoch+1}/{epochs}: Training Loss = {train_loss:.4f}')    
 
         # Validation
         val_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
         val_losses.append(val_loss)
 
+        # Check for Best Model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), os.path.join(model_path, f'best_model_epoch_{epoch+1}.pth'))
+        else:
+            patience_counter += 1
+
         # Update the plot with the current losses
         update_plot(epoch + 1, train_losses, val_losses, metrics_path)
 
     # Save the Model
-    torch.save(model.state_dict(), os.path.join(model_path, f'crossview_epoch_{epoch+1}.pth'))
+    torch.save(model.state_dict(), os.path.join(model_path, f'last_model_epoch_{epoch+1}.pth'))
+    print('Training Complete!\nPatience Counter:', patience_counter)
 
 
 def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
@@ -123,7 +134,7 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
 
     val_avg_loss = val_loss / len(val_loader)
 
-    print(f'Epoch {epoch+1}/{epochs}: Validation Loss = {val_avg_loss:.4f}')
+    # print(f'Epoch {epoch+1}/{epochs}: Validation Loss = {val_avg_loss:.4f}')
 
     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial'))
     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground'))
