@@ -246,134 +246,6 @@ def get_aerial_path(root_dir, lat, lon, zoom):
     return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
-def visualize_attention_reconstruction(original, reconstructed, attention_maps, epoch, save_path=None, num_images=16):
-    """
-    Visualize a comparison of original, reconstructed images, and attention maps in a grid format.
-
-    Parameters:
-    - original (torch.Tensor): The original images tensor.
-    - reconstructed (torch.Tensor): The reconstructed images tensor.
-    - attention_maps (torch.Tensor): The attention maps tensor.
-    - epoch (int): Current epoch number for titling the plot.
-    - save_path (str, optional): Path to save the resulting plot. If None, the plot is displayed.
-    - num_images (int): Number of images to display from the batch.
-    """
-    # Ensure that we do not exceed the number of images in the batch
-    num_images = min(num_images, original.size(0), reconstructed.size(0), attention_maps.size(0))
-
-    # Randomly select indices for display
-    indices = torch.randperm(original.size(0))[:num_images]
-
-    # Select the images from the tensors
-    selected_original = original[indices].cpu()
-    selected_reconstructed = reconstructed[indices].cpu()
-    selected_attention_maps = attention_maps[indices].cpu().squeeze(1)  # Remove the single channel dimension
-
-    # Create grids
-    original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=True)
-    reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=True)
-    attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)  # Add channel dimension back for make_grid
-
-    # Convert to numpy arrays
-    original_npimg = original_grid.numpy().transpose((1, 2, 0))
-    reconstructed_npimg = reconstructed_grid.numpy().transpose((1, 2, 0))
-    attention_npimg = attention_grid.numpy().squeeze()  # Remove channel dimension for grayscale
-
-    # Create figure and subplots
-    plt.figure(figsize=(24, 8))
-    plt.subplot(1, 3, 1)
-    plt.imshow(original_npimg)
-    plt.title(f'Epoch: {epoch + 1} - Original Images')
-    plt.axis('off')
-
-    plt.subplot(1, 3, 2)
-    plt.imshow(reconstructed_npimg)
-    plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
-    plt.axis('off')
-
-    plt.subplot(1, 3, 3)
-    plt.imshow(attention_npimg, cmap='gray')  # Display attention map in grayscale
-    plt.title(f'Epoch: {epoch + 1} - Attention Maps')
-    plt.axis('off')
-
-    # Save or show the image
-    if save_path is not None:
-        plt.savefig(save_path)
-    else:
-        plt.show()
-
-    plt.close()
-
-
-class PairedImagesDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        """
-        Dataset to load paired satellite and panorama images.
-        Args:
-            root_dir (str): Root directory containing the 'streetview' and 'streetview_aerial' subdirectories.
-            transform (callable, optional): Optional transform to be applied on a sample.
-        """
-        self.panorama_dir = os.path.join(root_dir, 'streetview', 'panos')
-        self.satellite_dir = os.path.join(root_dir, 'streetview_aerial')
-        self.transform = transform
-
-        self.paired_filenames = []
-        for root, _, files in os.walk(self.panorama_dir):
-            for file in files:
-                if file.endswith('.jpg'):
-                    pano_path = os.path.join(root, file)
-                    lat, lon = get_metadata(pano_path)
-                    if lat is None or lon is None:
-                        continue
-                    zoom = 18  # Only consider zoom level 18
-                    sat_path = get_aerial_path(self.satellite_dir, lat, lon, zoom)
-                    if os.path.exists(sat_path):
-                        self.paired_filenames.append((pano_path, sat_path))
-        
-        if len(self.paired_filenames) == 0:
-            print(f"Check if the directory paths are correct and accessible: {self.panorama_dir} and {self.satellite_dir}")
-
-    def __len__(self):
-        return len(self.paired_filenames)
-
-    def __getitem__(self, idx):
-        pano_img_path, sat_img_path = self.paired_filenames[idx]
-
-        pano_image = Image.open(pano_img_path).convert('RGB')
-        sat_image = Image.open(sat_img_path).convert('RGB')
-
-        if self.transform:
-            pano_image = self.transform(pano_image)
-            sat_image = self.transform(sat_image)
-
-        return pano_image, sat_image
-    
-
-# Define the Datasets using sampled filenames
-class SampledPairedImagesDataset(Dataset):
-    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
-        self.filenames = filenames
-        self.transform_aerial = transform_aerial
-        self.transform_ground = transform_ground
-
-    def __len__(self):
-        return len(self.filenames)
-
-    def __getitem__(self, idx):
-        pano_img_path, sat_img_path = self.filenames[idx]
-
-        pano_image = Image.open(pano_img_path).convert('RGB')
-        sat_image = Image.open(sat_img_path).convert('RGB')
-
-        if self.transform_aerial:
-            pano_image = self.transform_ground(pano_image)
-
-        if self.transform_ground:
-            sat_image = self.transform_aerial(sat_image)
-
-        return sat_image, pano_image
-
-
 class ViTEncoder(nn.Module):
     def __init__(self, out_features=100, model_name='dinov2_vits14_reg_lc'):
         super(ViTEncoder, self).__init__()
@@ -451,7 +323,7 @@ class Encoder(nn.Module):
    
 
 class Decoder(nn.Module):
-    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=4, initial_size=7):
+    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=3, initial_size=7):
         super(Decoder, self).__init__()
 
         self.input_dims = input_dims
@@ -460,27 +332,27 @@ class Decoder(nn.Module):
         self.initial_size = initial_size
         
         self.fc = nn.Sequential(
-            nn.Linear(input_dims, 5000),
-            nn.ELU(True),
-            nn.Linear(5000, hidden_dims*initial_size*initial_size)
-        )
+			nn.Linear(input_dims, 5000),
+			nn.ELU(True),
+			nn.Linear(5000, hidden_dims*initial_size*initial_size)
+		)
 
         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
         
         self.upsample = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 1024x7x7 -> 512x14x14
+            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),            # 1024x7x7 -> 512x14x14
             nn.BatchNorm2d(hidden_dims // 2),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),  # 512x14x14 -> 256x28x28
+			nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),       # 512x14x14 -> 256x28x28
             nn.BatchNorm2d(hidden_dims // 4),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 4, hidden_dims // 8, kernel_size=3, stride=2, padding=1, output_padding=1),  # 256x28x28 -> 128x56x56
+			nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 4, hidden_dims // 8, kernel_size=3, stride=2, padding=1, output_padding=1),       # 256x28x28 -> 128x56x56
             nn.BatchNorm2d(hidden_dims // 8),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x56x56 -> 64x112x112
+			nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),      # 128x56x56 -> 64x112x112
             nn.BatchNorm2d(hidden_dims // 16),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),  # 64x112x112 -> 4x224x224
+			nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),       # 64x112x112 -> 3x224x224
             nn.Sigmoid()
         )
 
@@ -488,10 +360,7 @@ class Decoder(nn.Module):
         x = self.fc(x)
         x = self.unflatten(x)
         x = self.upsample(x)
-        image = x[:, :3, :, :]              # first 3 channels for RGB image
-        attention_map = x[:, 3:, :, :]      # last channel for attention map
-
-        return image, attention_map
+        return x
     
 
 class MLP(nn.Module):
@@ -505,32 +374,124 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.fc(x)
+    
 
+class Attention(nn.Module):
+    def __init__(self, n_encoded, n_phi, attention_size=224):
+        super(Attention, self).__init__()
+        self.fc1 = nn.Linear(n_encoded + n_phi, 1000)
+        self.fc2 = nn.Linear(1000, attention_size * attention_size)
+        self.attention_size = attention_size
+    
+    def forward(self, encoded_image, phi):
+        combined = torch.cat((encoded_image, phi), dim=1)
+        attention = torch.relu(self.fc1(combined))
+        attention = torch.sigmoid(self.fc2(attention))
+        attention = attention.view(-1, 1, self.attention_size, self.attention_size)
+        return attention
+
+
+
+
+class PairedImagesDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        """
+        Dataset to load paired satellite and panorama images.
+        Args:
+            root_dir (str): Root directory containing the 'streetview' and 'streetview_aerial' subdirectories.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.panorama_dir = os.path.join(root_dir, 'streetview', 'panos')
+        self.satellite_dir = os.path.join(root_dir, 'streetview_aerial')
+        self.transform = transform
+
+        self.paired_filenames = []
+        for root, _, files in os.walk(self.panorama_dir):
+            for file in files:
+                if file.endswith('.jpg'):
+                    pano_path = os.path.join(root, file)
+                    lat, lon = get_metadata(pano_path)
+                    if lat is None or lon is None:
+                        continue
+                    zoom = 18  # Only consider zoom level 18
+                    sat_path = get_aerial_path(self.satellite_dir, lat, lon, zoom)
+                    if os.path.exists(sat_path):
+                        self.paired_filenames.append((pano_path, sat_path))
+        
+        if len(self.paired_filenames) == 0:
+            print(f"Check if the directory paths are correct and accessible: {self.panorama_dir} and {self.satellite_dir}")
+
+    def __len__(self):
+        return len(self.paired_filenames)
+
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.paired_filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
+
+        if self.transform:
+            pano_image = self.transform(pano_image)
+            sat_image = self.transform(sat_image)
+
+        return pano_image, sat_image
+    
+
+# Define the Datasets using sampled filenames
+class SampledPairedImagesDataset(Dataset):
+    def __init__(self, filenames, transform_aerial=None, transform_ground=None):
+        self.filenames = filenames
+        self.transform_aerial = transform_aerial
+        self.transform_ground = transform_ground
+
+    def __len__(self):
+        return len(self.filenames)
+
+    def __getitem__(self, idx):
+        pano_img_path, sat_img_path = self.filenames[idx]
+
+        pano_image = Image.open(pano_img_path).convert('RGB')
+        sat_image = Image.open(sat_img_path).convert('RGB')
+
+        if self.transform_aerial:
+            pano_image = self.transform_ground(pano_image)
+
+        if self.transform_ground:
+            sat_image = self.transform_aerial(sat_image)
+
+        return sat_image, pano_image
+    
 
 class CrossView(nn.Module):
-    def __init__(self, n_phi, n_encoded, hidden_dims, image_size, output_channels=3, debug=False):
+    def __init__(self, n_phi, n_encoded, hidden_dims, attention_size, image_size, debug=False):
         super(CrossView, self).__init__()
 
         self.encoder_A = Encoder(latent_dim=n_encoded)
         self.encoder_G = Encoder(latent_dim=n_encoded)
         self.mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi)
-        self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
-        self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
+        self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
+        self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7)
+        self.attention = Attention(n_encoded, n_phi, attention_size)
+        self.attention_size = attention_size
         self.image_size = image_size
         self.debug = debug
     
     def forward(self, images_A, images_G):
 
-        # Encode images A and G
+        # Encode images A and B
         encoded_A = self.encoder_A(images_A)
         encoded_G = self.encoder_G(images_G)
 
         # Concatenate and process through MLP
-        phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=-1))
+        phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=1))
+
+        # Compute Attention Maps
+        attention_A = self.attention(encoded_A, phi)
+        attention_G = self.attention(encoded_G, phi)
 
         # Decode the MLP output into reconstructed images
-        reconstructed_A, attention_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
-        reconstructed_G, attention_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+        reconstructed_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
+        reconstructed_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
 
         # Print shapes for debugging
         if self.debug:
