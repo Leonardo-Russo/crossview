@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import argparse
 
 
-def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled'):
+def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
 
     model.to(device)
 
@@ -72,6 +72,12 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             # Backward Propagation and Optimization Step
             total_loss.backward()
             optimizer.step()
+
+            # Print shapes for debugging
+            if debug:
+                print(f"Reconstructed A: {reconstructed_A.shape}, Attention A: {attention_A.shape}, "
+                    f"Loss Map A: {loss_map_A.shape}, Attended Loss A: {attended_loss_A.shape}, Loss A: {loss_A}")
+
 
         train_loss = running_loss / len(train_loader)
         train_losses.append(train_loss)

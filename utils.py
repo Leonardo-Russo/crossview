@@ -267,17 +267,21 @@ def visualize_attention_reconstruction(original, reconstructed, attention_maps, 
     # Select the images from the tensors
     selected_original = original[indices].cpu()
     selected_reconstructed = reconstructed[indices].cpu()
-    selected_attention_maps = attention_maps[indices].cpu().squeeze(1)  # Remove the single channel dimension
+    selected_attention_maps = attention_maps[indices].cpu()
+
+    # Ensure the attention maps are correctly shaped for grayscale display
+    if selected_attention_maps.dim() == 4 and selected_attention_maps.size(1) == 1:
+        selected_attention_maps = selected_attention_maps.squeeze(1)  # Remove the channel dimension
 
     # Create grids
     original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=True)
     reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=True)
-    attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)  # Add channel dimension back for make_grid
+    attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)
 
     # Convert to numpy arrays
     original_npimg = original_grid.numpy().transpose((1, 2, 0))
     reconstructed_npimg = reconstructed_grid.numpy().transpose((1, 2, 0))
-    attention_npimg = attention_grid.numpy().squeeze()  # Remove channel dimension for grayscale
+    attention_npimg = attention_grid.numpy().transpose((1, 2, 0))[:, :, 0]  # Ensure it's single-channel for grayscale
 
     # Create figure and subplots
     plt.figure(figsize=(24, 8))
@@ -303,6 +307,8 @@ def visualize_attention_reconstruction(original, reconstructed, attention_maps, 
         plt.show()
 
     plt.close()
+
+
 
 
 class PairedImagesDataset(Dataset):
@@ -451,22 +457,23 @@ class Encoder(nn.Module):
    
 
 class Decoder(nn.Module):
-    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=4, initial_size=7):
+    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=4, initial_size=7, image_size=224):
         super(Decoder, self).__init__()
 
         self.input_dims = input_dims
         self.hidden_dims = hidden_dims
         self.output_channels = output_channels
         self.initial_size = initial_size
-        
+        self.image_size = image_size
+
         self.fc = nn.Sequential(
             nn.Linear(input_dims, 5000),
             nn.ELU(True),
-            nn.Linear(5000, hidden_dims*initial_size*initial_size)
+            nn.Linear(5000, hidden_dims * initial_size * initial_size)
         )
 
         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
-        
+
         self.upsample = nn.Sequential(
             nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 1024x7x7 -> 512x14x14
             nn.BatchNorm2d(hidden_dims // 2),
@@ -488,10 +495,21 @@ class Decoder(nn.Module):
         x = self.fc(x)
         x = self.unflatten(x)
         x = self.upsample(x)
-        image = x[:, :3, :, :]              # first 3 channels for RGB image
-        attention_map = x[:, 3:, :, :]      # last channel for attention map
+        image = x[:, :3, :, :]  # first 3 channels for RGB image
+        attention_map = x[:, 3, :, :]  # last channel for attention map
+
+        # Reshape attention map for softmax
+        batch_size = attention_map.size(0)
+        attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
+
+        # Apply softmax
+        attention_map_flat = torch.softmax(attention_map_flat, dim=1)
+
+        # Reshape back to image_size x image_size
+        attention_map = attention_map_flat.view(batch_size, 1, self.image_size, self.image_size)
 
         return image, attention_map
+
     
 
 class MLP(nn.Module):
