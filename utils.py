@@ -246,7 +246,7 @@ def get_aerial_path(root_dir, lat, lon, zoom):
     return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
-def visualize_attention_reconstruction(original, reconstructed, attention_maps, epoch, save_path=None, num_images=16):
+def visualize_attention_reconstruction(original, reconstructed, loss_maps, attention_maps, epoch, save_path=None, num_images=16):
     """
     Visualize a comparison of original, reconstructed images, and attention maps in a grid format.
 
@@ -259,7 +259,7 @@ def visualize_attention_reconstruction(original, reconstructed, attention_maps, 
     - num_images (int): Number of images to display from the batch.
     """
     # Ensure that we do not exceed the number of images in the batch
-    num_images = min(num_images, original.size(0), reconstructed.size(0), attention_maps.size(0))
+    num_images = min(num_images, original.size(0), reconstructed.size(0), loss_maps.size(0), attention_maps.size(0))
 
     # Randomly select indices for display
     indices = torch.randperm(original.size(0))[:num_images]
@@ -268,35 +268,45 @@ def visualize_attention_reconstruction(original, reconstructed, attention_maps, 
     selected_original = original[indices].cpu()
     selected_reconstructed = reconstructed[indices].cpu()
     selected_attention_maps = attention_maps[indices].cpu()
+    selected_loss_maps = loss_maps[indices].cpu()
 
     # Ensure the attention maps are correctly shaped for grayscale display
+    if selected_loss_maps.dim() == 4 and selected_loss_maps.size(1) == 1:
+        selected_loss_maps = selected_loss_maps.squeeze(1)                  # remove the channel dimension
     if selected_attention_maps.dim() == 4 and selected_attention_maps.size(1) == 1:
-        selected_attention_maps = selected_attention_maps.squeeze(1)  # Remove the channel dimension
+        selected_attention_maps = selected_attention_maps.squeeze(1)
 
     # Create grids
     original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=True)
     reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=True)
-    attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)
+    loss_grid = make_grid(selected_loss_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)
+    attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=False)
 
     # Convert to numpy arrays
     original_npimg = original_grid.numpy().transpose((1, 2, 0))
     reconstructed_npimg = reconstructed_grid.numpy().transpose((1, 2, 0))
-    attention_npimg = attention_grid.numpy().transpose((1, 2, 0))[:, :, 0]  # Ensure it's single-channel for grayscale
+    loss_npimg = loss_grid.numpy().transpose((1, 2, 0))[:, :, 0]            # ensure it's single-channel for grayscale
+    attention_npimg = attention_grid.numpy().transpose((1, 2, 0))[:, :, 0]
 
     # Create figure and subplots
-    plt.figure(figsize=(24, 8))
-    plt.subplot(1, 3, 1)
+    plt.figure(figsize=(24, 16))
+    plt.subplot(2, 2, 1)
     plt.imshow(original_npimg)
     plt.title(f'Epoch: {epoch + 1} - Original Images')
     plt.axis('off')
 
-    plt.subplot(1, 3, 2)
+    plt.subplot(2, 2, 2)
     plt.imshow(reconstructed_npimg)
     plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
     plt.axis('off')
 
-    plt.subplot(1, 3, 3)
-    plt.imshow(attention_npimg, cmap='gray')  # Display attention map in grayscale
+    plt.subplot(2, 2, 3)
+    plt.imshow(loss_npimg, cmap='gray')
+    plt.title(f'Epoch: {epoch + 1} - Loss Maps')
+    plt.axis('off')
+
+    plt.subplot(2, 2, 4)
+    plt.imshow(attention_npimg, cmap='gray')
     plt.title(f'Epoch: {epoch + 1} - Attention Maps')
     plt.axis('off')
 
@@ -307,8 +317,6 @@ def visualize_attention_reconstruction(original, reconstructed, attention_maps, 
         plt.show()
 
     plt.close()
-
-
 
 
 class PairedImagesDataset(Dataset):
@@ -487,26 +495,34 @@ class Decoder(nn.Module):
             nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x56x56 -> 64x112x112
             nn.BatchNorm2d(hidden_dims // 16),
             nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),  # 64x112x112 -> 4x224x224
-            nn.Sigmoid()
+            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1)  # 64x112x112 -> 4x224x224
         )
 
     def forward(self, x):
         x = self.fc(x)
         x = self.unflatten(x)
         x = self.upsample(x)
-        image = x[:, :3, :, :]  # first 3 channels for RGB image
-        attention_map = x[:, 3, :, :]  # last channel for attention map
+        image = x[:, :3, :, :]          # first 3 channels for RGB image
+        image = torch.sigmoid(image)
+        attention_map = x[:, 3, :, :] + 100  # last channel for attention map
+        # print(attention_map.mean())
 
         # Reshape attention map for softmax
         batch_size = attention_map.size(0)
         attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
 
+        # print("Batch Size: ", batch_size)
+        # print("Attention Map Size: ", attention_map_flat.shape)
+        # print("Attention Map: ", attention_map_flat[0, :10])
+
         # Apply softmax
-        attention_map_flat = torch.softmax(attention_map_flat, dim=1)
+        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.image_size * self.image_size
+        # print("Attention Map: ", attention_map_flat[0, :10])
 
         # Reshape back to image_size x image_size
         attention_map = attention_map_flat.view(batch_size, 1, self.image_size, self.image_size)
+
+        # print("Decoder Output Size: ", image.shape, attention_map.shape)
 
         return image, attention_map
 

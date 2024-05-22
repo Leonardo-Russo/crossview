@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-from PIL import Image
+from PIL import Image, ImageFile
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.utils import make_grid
@@ -147,11 +147,11 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             if first_batch:
                 first_batch = False
                 if epoch != "best":
-                    visualize_attention_reconstruction(images_A, reconstructed_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
                 else:
-                    visualize_attention_reconstruction(images_A, reconstructed_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
 
     val_avg_loss = val_loss / len(val_loader)
     return val_avg_loss
@@ -171,7 +171,7 @@ if __name__ == '__main__':
     hidden_dims = 512                       # hidden dimensions
     n_encoded = 1024                        # output size for the encoders
     n_phi = 10                              # size of phi
-    batch_size = 64
+    batch_size = 32
     shuffle = True
 
     # Select device
@@ -213,8 +213,11 @@ if __name__ == '__main__':
         transforms.ToTensor()
     ])
 
+    # Enable loading truncated images
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+
     # Sample paired images
-    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.01, split_ratio=0.8)
 
     # Define the Datasets
     train_dataset = SampledPairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
