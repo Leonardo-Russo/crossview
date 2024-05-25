@@ -246,7 +246,7 @@ def get_aerial_path(root_dir, lat, lon, zoom):
     return os.path.join(root_dir, f'{zoom}/{lat_bin}/{lon_bin}/{lat}_{lon}.jpg')
 
 
-def visualize_attention_reconstruction(original, reconstructed, loss_maps, attention_maps, epoch, save_path=None, num_images=16):
+def visualize_attention_reconstruction(original, reconstructed, loss_maps, attention_maps, attended_loss_maps, attended, epoch, save_path=None, num_images=16):
     """
     Visualize a comparison of original, reconstructed images, and attention maps in a grid format.
 
@@ -259,7 +259,7 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
     - num_images (int): Number of images to display from the batch.
     """
     # Ensure that we do not exceed the number of images in the batch
-    num_images = min(num_images, original.size(0), reconstructed.size(0), loss_maps.size(0), attention_maps.size(0))
+    num_images = min(num_images, original.size(0), reconstructed.size(0), loss_maps.size(0), attention_maps.size(0), attended_loss_maps.size(0), attended.size(0))
 
     # Randomly select indices for display
     indices = torch.randperm(original.size(0))[:num_images]
@@ -269,45 +269,63 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
     selected_reconstructed = reconstructed[indices].cpu()
     selected_attention_maps = attention_maps[indices].cpu()
     selected_loss_maps = loss_maps[indices].cpu()
+    selected_attended_loss_maps = attended_loss_maps[indices].cpu()
+    selected_attended = attended[indices].cpu()
 
     # Ensure the attention maps are correctly shaped for grayscale display
     if selected_loss_maps.dim() == 4 and selected_loss_maps.size(1) == 1:
         selected_loss_maps = selected_loss_maps.squeeze(1)                  # remove the channel dimension
     if selected_attention_maps.dim() == 4 and selected_attention_maps.size(1) == 1:
         selected_attention_maps = selected_attention_maps.squeeze(1)
+    if selected_attended_loss_maps.dim() == 4 and selected_attended_loss_maps.size(1) == 1:
+        selected_attended_loss_maps = selected_attended_loss_maps.squeeze(1)
 
     # Create grids
-    original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=True)
-    reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=True)
-    loss_grid = make_grid(selected_loss_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=True)
+    original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=False)
+    reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=False)
+    loss_grid = make_grid(selected_loss_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=False)
     attention_grid = make_grid(selected_attention_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=False)
+    attended_loss_grid = make_grid(selected_attended_loss_maps.unsqueeze(1), nrow=int(num_images**0.5), normalize=False)
+    attended_grid = make_grid(selected_attended, nrow=int(num_images**0.5), normalize=False)
 
     # Convert to numpy arrays
     original_npimg = original_grid.numpy().transpose((1, 2, 0))
     reconstructed_npimg = reconstructed_grid.numpy().transpose((1, 2, 0))
     loss_npimg = loss_grid.numpy().transpose((1, 2, 0))[:, :, 0]            # ensure it's single-channel for grayscale
     attention_npimg = attention_grid.numpy().transpose((1, 2, 0))[:, :, 0]
+    attended_loss_npimg = attended_loss_grid.numpy().transpose((1, 2, 0))[:, :, 0]
+    attended_npimg = attended_grid.numpy().transpose((1, 2, 0))
 
     # Create figure and subplots
     plt.figure(figsize=(24, 16))
-    plt.subplot(2, 2, 1)
+    plt.subplot(2, 3, 1)
     plt.imshow(original_npimg)
     plt.title(f'Epoch: {epoch + 1} - Original Images')
     plt.axis('off')
 
-    plt.subplot(2, 2, 2)
+    plt.subplot(2, 3, 4)
     plt.imshow(reconstructed_npimg)
     plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
     plt.axis('off')
 
-    plt.subplot(2, 2, 3)
+    plt.subplot(2, 3, 2)
     plt.imshow(loss_npimg, cmap='gray')
     plt.title(f'Epoch: {epoch + 1} - Loss Maps')
     plt.axis('off')
 
-    plt.subplot(2, 2, 4)
+    plt.subplot(2, 3, 5)
     plt.imshow(attention_npimg, cmap='gray')
     plt.title(f'Epoch: {epoch + 1} - Attention Maps')
+    plt.axis('off')
+
+    plt.subplot(2, 3, 3)
+    plt.imshow(attended_loss_npimg, cmap='gray')
+    plt.title(f'Epoch: {epoch + 1} - Attended Loss Maps')
+    plt.axis('off')
+
+    plt.subplot(2, 3, 6)
+    plt.imshow(attended_npimg)
+    plt.title(f'Epoch: {epoch + 1} - Attended Images')
     plt.axis('off')
 
     # Save or show the image
@@ -427,7 +445,7 @@ class ViTEncoder(nn.Module):
 
 class Encoder(nn.Module):
 
-	def __init__(self, latent_dim):
+	def __init__(self, latent_dim=10):
 		super(Encoder, self).__init__()
 
 		self.cnn = nn.Sequential(
@@ -465,7 +483,7 @@ class Encoder(nn.Module):
    
 
 class Decoder(nn.Module):
-    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=4, initial_size=7, image_size=224):
+    def __init__(self, input_dims=100, hidden_dims=1024, output_channels=3, initial_size=7, image_size=224):
         super(Decoder, self).__init__()
 
         self.input_dims = input_dims
@@ -475,9 +493,9 @@ class Decoder(nn.Module):
         self.image_size = image_size
 
         self.fc = nn.Sequential(
-            nn.Linear(input_dims, 5000),
+            nn.Linear(input_dims, input_dims*2),
             nn.ELU(True),
-            nn.Linear(5000, hidden_dims * initial_size * initial_size)
+            nn.Linear(input_dims*2, hidden_dims * initial_size * initial_size)
         )
 
         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
@@ -495,37 +513,75 @@ class Decoder(nn.Module):
             nn.ConvTranspose2d(hidden_dims // 8, hidden_dims // 16, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x56x56 -> 64x112x112
             nn.BatchNorm2d(hidden_dims // 16),
             nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1)  # 64x112x112 -> 4x224x224
+            nn.ConvTranspose2d(hidden_dims // 16, output_channels, kernel_size=3, stride=2, padding=1, output_padding=1),  # 64x112x112 -> 4x224x224
+            nn.Sigmoid()
         )
 
     def forward(self, x):
         x = self.fc(x)
         x = self.unflatten(x)
         x = self.upsample(x)
-        image = x[:, :3, :, :]          # first 3 channels for RGB image
-        image = torch.sigmoid(image)
-        attention_map = x[:, 3, :, :] + 100  # last channel for attention map
-        # print(attention_map.mean())
+        return x
+
+
+class Attention(nn.Module):
+    def __init__(self, input_dims=100, hidden_dims=512, output_channels=1, initial_size=7, image_size=224, attention_size=224//4):
+        super(Attention, self).__init__()
+
+        self.input_dims = input_dims
+        self.hidden_dims = hidden_dims
+        self.output_channels = output_channels
+        self.initial_size = initial_size
+        self.image_size = image_size
+        self.attention_size = attention_size
+        self.bias = 10
+
+        self.fc = nn.Sequential(
+            nn.Linear(input_dims, input_dims),
+            nn.ELU(True),
+            nn.Linear(input_dims, hidden_dims * initial_size * initial_size)
+        )
+
+        self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
+
+        self.upsample = nn.Sequential(
+            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 512x7x7 -> 256x14x14
+            nn.BatchNorm2d(hidden_dims // 2),
+            nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),  # 256x14x14 -> 128x28x28
+            nn.BatchNorm2d(hidden_dims // 4),
+            nn.ELU(True),
+            nn.ConvTranspose2d(hidden_dims // 4, 1, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x28x28 -> 1x56x56
+        )
+
+    def forward(self, x):
+        x = self.fc(x)
+        x = self.unflatten(x)
+        x = self.upsample(x)
+        attention_map = x + self.bias
 
         # Reshape attention map for softmax
         batch_size = attention_map.size(0)
         attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
 
         # print("Batch Size: ", batch_size)
+        # print("Attention Map Mean: ", attention_map.mean())
         # print("Attention Map Size: ", attention_map_flat.shape)
         # print("Attention Map: ", attention_map_flat[0, :10])
 
         # Apply softmax
-        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.image_size * self.image_size
-        # print("Attention Map: ", attention_map_flat[0, :10])
+        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
+        # print("Attention Map Softmaxed: ", attention_map_flat[0, :10])
+        # print("Attention Map Size: ", attention_map_flat.shape)
 
         # Reshape back to image_size x image_size
-        attention_map = attention_map_flat.view(batch_size, 1, self.image_size, self.image_size)
+        attention_map = attention_map_flat.view(batch_size, 1, self.attention_size, self.attention_size)
 
-        # print("Decoder Output Size: ", image.shape, attention_map.shape)
+        # top-k hard cap to 10% of the image pixels
+        # get binary map
+        # add the original softmax and subtract it with gradient detached
 
-        return image, attention_map
-
+        return attention_map
     
 
 class MLP(nn.Module):
@@ -548,12 +604,17 @@ class CrossView(nn.Module):
         self.encoder_A = Encoder(latent_dim=n_encoded)
         self.encoder_G = Encoder(latent_dim=n_encoded)
         self.mlp = MLP(input_dims=2*n_encoded, output_dims=n_phi)
+        self.attention_A2G = Attention(input_dims=n_phi, hidden_dims=hidden_dims, output_channels=1, initial_size=7)
+        self.attention_G2A = Attention(input_dims=n_phi, hidden_dims=hidden_dims, output_channels=1, initial_size=7)
         self.decoder_A2G = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
         self.decoder_G2A = Decoder(input_dims=n_phi+n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
+        
         self.image_size = image_size
         self.debug = debug
     
     def forward(self, images_A, images_G):
+
+        skip_attention = False
 
         # Encode images A and G
         encoded_A = self.encoder_A(images_A)
@@ -562,13 +623,33 @@ class CrossView(nn.Module):
         # Concatenate and process through MLP
         phi = self.mlp(torch.cat((encoded_A, encoded_G), dim=-1))
 
+        # Compute Attention Maps
+        attention_A = self.attention_A2G(phi)
+        attention_G = self.attention_G2A(phi)
+
+        # Resize Attention Maps into Image Size Map
+        attention_A = F.interpolate(attention_A, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
+        attention_G = F.interpolate(attention_G, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
+
+        if skip_attention:
+            attention_A = torch.ones_like(attention_A)
+            attention_G = torch.ones_like(attention_G)
+        
+        # Apply Attention Maps to Images
+        attended_A = images_A * attention_A.expand_as(images_A)     # apply on all channels
+        attended_G = images_G * attention_G.expand_as(images_G)     # apply on all channels
+
+        # Encode the attended images
+        encoded_attended_A = self.encoder_A(attended_A)
+        encoded_attended_G = self.encoder_G(attended_G)
+
         # Decode the MLP output into reconstructed images
-        reconstructed_A, attention_A = self.decoder_G2A(torch.cat((phi, encoded_G), dim=1))
-        reconstructed_G, attention_G = self.decoder_A2G(torch.cat((phi, encoded_A), dim=1))
+        reconstructed_A = self.decoder_G2A(torch.cat((phi, encoded_attended_G), dim=1))
+        reconstructed_G = self.decoder_A2G(torch.cat((phi, encoded_attended_A), dim=1))
 
         # Print shapes for debugging
         if self.debug:
             print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
                   f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
             
-        return reconstructed_A, reconstructed_G, attention_A, attention_G
+        return reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G

@@ -50,11 +50,14 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
-            reconstructed_A, reconstructed_G, attention_A, attention_G = model(images_A, images_G)
+            reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G = model(images_A, images_G)
 
             # Compute pixel-wise loss maps and average across channels
             loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
             loss_map_G = torch.abs(reconstructed_G - images_G).mean(dim=1, keepdim=True)
+
+            if debug:
+                print(f"Loss A: {loss_map_A.shape}, Attention A: {attention_A.shape}, ")
 
             # Apply Attention to Loss Maps
             attended_loss_A = loss_map_A * attention_A
@@ -63,6 +66,11 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             # Compute Total Loss using HuberLoss
             loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
             loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
+
+            # # My Tweak
+            # loss_A = criterion(reconstructed_A, images_A)
+            # loss_G = criterion(reconstructed_G, images_G)
+
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
 
@@ -119,6 +127,7 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
     model.eval()
     val_loss = 0
     first_batch = True
+    skip_attention = True
 
     with torch.no_grad():
         for images_A, images_G in val_loader:
@@ -127,7 +136,7 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
-            reconstructed_A, reconstructed_G, attention_A, attention_G = model(images_A, images_G)
+            reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G = model(images_A, images_G)
 
             # Compute pixel-wise loss maps and average across channels
             loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
@@ -147,11 +156,11 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             if first_batch:
                 first_batch = False
                 if epoch != "best":
-                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, attended_loss_A, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, attended_loss_G, attended_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
                 else:
-                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, attended_loss_A, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
+                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, attended_loss_G, attended_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
 
     val_avg_loss = val_loss / len(val_loader)
     return val_avg_loss
@@ -160,7 +169,8 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Train a model.')
-    parser.add_argument('save_path', type=str, help='Path to save the model and results')
+    parser.add_argument('save_path', nargs='?', const='untitled', default='untitled', type=str, help='Path to save the model and results')
+    parser.add_argument('--save_path', '-s', type=str, help='Path to save the model and results', dest='save_path')
     args = parser.parse_args()
 
     # Constants
@@ -171,7 +181,7 @@ if __name__ == '__main__':
     hidden_dims = 512                       # hidden dimensions
     n_encoded = 1024                        # output size for the encoders
     n_phi = 10                              # size of phi
-    batch_size = 32
+    batch_size = 64
     shuffle = True
 
     # Select device
@@ -179,7 +189,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels+attention_channels).to(device)
+    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels).to(device)
     print(model)
 
     # Optimizer and Loss Function
@@ -217,7 +227,7 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
-    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.01, split_ratio=0.8)
+    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
 
     # Define the Datasets
     train_dataset = SampledPairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
@@ -227,4 +237,4 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
     val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
-    train(model, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path)
+    train(model, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path, debug=False)
