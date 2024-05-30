@@ -300,36 +300,54 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
     plt.figure(figsize=(24, 16))
     plt.subplot(2, 3, 1)
     plt.imshow(original_npimg)
-    plt.title(f'Epoch: {epoch + 1} - Original Images')
+    if epoch is not "best":
+        plt.title(f'Epoch: {epoch + 1} - Original Images')
+    else:
+        plt.title(f'Best Model - Original Images')
     plt.axis('off')
 
     plt.subplot(2, 3, 4)
     plt.imshow(reconstructed_npimg)
-    plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
+    else:
+        plt.title(f'Best Model - Reconstructed Images')
     plt.axis('off')
 
     plt.subplot(2, 3, 2)
     plt.imshow(loss_npimg, cmap='gray')
-    plt.title(f'Epoch: {epoch + 1} - Loss Maps')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Loss Maps')
+    else:
+        plt.title(f'Best Model - Loss Maps')
     plt.axis('off')
 
     plt.subplot(2, 3, 5)
     plt.imshow(attention_npimg, cmap='gray')
-    plt.title(f'Epoch: {epoch + 1} - Attention Maps')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attention Maps')
+    else:
+        plt.title(f'Best Model - Attention Maps')
     plt.axis('off')
 
     plt.subplot(2, 3, 3)
     plt.imshow(attended_loss_npimg, cmap='gray')
-    plt.title(f'Epoch: {epoch + 1} - Attended Loss Maps')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attended Loss Maps')
+    else:
+        plt.title(f'Best Model - Attended Loss Maps')
     plt.axis('off')
 
     plt.subplot(2, 3, 6)
     plt.imshow(attended_npimg)
-    plt.title(f'Epoch: {epoch + 1} - Attended Images')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attended Images')
+    else:
+        plt.title(f'Best Model - Attended Images')
     plt.axis('off')
 
     # Save or show the image
-    if save_path is not None:
+    if save_path != None:
         plt.savefig(save_path)
     else:
         plt.show()
@@ -404,6 +422,23 @@ class SampledPairedImagesDataset(Dataset):
             sat_image = self.transform_aerial(sat_image)
 
         return sat_image, pano_image
+
+
+class PerceptualLoss(nn.Module):
+    def __init__(self):
+        super(PerceptualLoss, self).__init__()
+        self.vgg = models.vgg16(weights=VGG16_Weights.DEFAULT).features[:16]
+        for param in self.vgg.parameters():
+            param.requires_grad = False     # freeze VGG layers
+
+    def forward(self, reconstructed, original):
+
+        # Compute features and the loss
+        reconstructed_features = self.vgg(reconstructed)
+        target_features = self.vgg(original)
+        loss = nn.functional.l1_loss(reconstructed_features, target_features)
+        
+        return loss
 
 
 class ViTEncoder(nn.Module):
@@ -558,28 +593,36 @@ class Attention(nn.Module):
         x = self.fc(x)
         x = self.unflatten(x)
         x = self.upsample(x)
-        attention_map = x + self.bias
+        # attention_map = x + self.bias
+        attention_map = x
 
         # Reshape attention map for softmax
         batch_size = attention_map.size(0)
         attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
 
-        # print("Batch Size: ", batch_size)
+        # Apply softmax
+        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
+
         # print("Attention Map Mean: ", attention_map.mean())
         # print("Attention Map Size: ", attention_map_flat.shape)
         # print("Attention Map: ", attention_map_flat[0, :10])
 
-        # Apply softmax
-        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
-        # print("Attention Map Softmaxed: ", attention_map_flat[0, :10])
-        # print("Attention Map Size: ", attention_map_flat.shape)
-
         # Reshape back to image_size x image_size
         attention_map = attention_map_flat.view(batch_size, 1, self.attention_size, self.attention_size)
 
-        # top-k hard cap to 10% of the image pixels
-        # get binary map
-        # add the original softmax and subtract it with gradient detached
+        # Interpolate to the desired image size
+        attention_map = F.interpolate(attention_map, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
+
+        # # Compute top 10% threshold
+        # top_k = int(0.1 * attention_map.numel() / batch_size)
+        # top_values, _ = torch.topk(attention_map.view(batch_size, -1), top_k, dim=1)
+        # threshold = top_values[:, -1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+        # # Create binary map
+        # binary_map = (attention_map >= threshold).float()
+
+        # # Create the final attention map
+        # attention_map = binary_map + attention_map - attention_map.detach()
 
         return attention_map
     
