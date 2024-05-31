@@ -63,13 +63,13 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             attended_loss_A = loss_map_A * attention_A
             attended_loss_G = loss_map_G * attention_G
 
-            # # Compute Total Loss using HuberLoss
-            # loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
-            # loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
+            # Compute Total Loss using HuberLoss
+            loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
+            loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
 
-            # My Tweak
-            loss_A = criterion(reconstructed_A, images_A)
-            loss_G = criterion(reconstructed_G, images_G)
+            # # My Tweak
+            # loss_A = criterion(reconstructed_A, images_A)
+            # loss_G = criterion(reconstructed_G, images_G)
 
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
@@ -189,7 +189,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels).to(device)
+    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels, pretrained=True).to(device)
     print(model)
 
     # Optimizer and Loss Function
@@ -197,8 +197,8 @@ if __name__ == '__main__':
     params = [{"params": model.parameters()}]
     weight_decay = 1e-5
     optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
-    # criterion = nn.HuberLoss()
-    criterion = PerceptualLoss()
+    criterion = nn.HuberLoss()
+    # criterion = PerceptualLoss()
 
     # Transformations
     transform_ground = transforms.Compose([

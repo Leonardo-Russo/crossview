@@ -300,7 +300,7 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
     plt.figure(figsize=(24, 16))
     plt.subplot(2, 3, 1)
     plt.imshow(original_npimg)
-    if epoch is not "best":
+    if epoch != "best":
         plt.title(f'Epoch: {epoch + 1} - Original Images')
     else:
         plt.title(f'Best Model - Original Images')
@@ -559,6 +559,74 @@ class Decoder(nn.Module):
         return x
 
 
+# class Attention(nn.Module):
+#     def __init__(self, input_dims=100, hidden_dims=512, output_channels=1, initial_size=7, image_size=224, attention_size=224//4):
+#         super(Attention, self).__init__()
+
+#         self.input_dims = input_dims
+#         self.hidden_dims = hidden_dims
+#         self.output_channels = output_channels
+#         self.initial_size = initial_size
+#         self.image_size = image_size
+#         self.attention_size = attention_size
+#         self.bias = 10
+
+#         self.fc = nn.Sequential(
+#             nn.Linear(input_dims, input_dims),
+#             nn.ELU(True),
+#             nn.Linear(input_dims, hidden_dims * initial_size * initial_size)
+#         )
+
+#         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
+
+#         self.upsample = nn.Sequential(
+#             nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 512x7x7 -> 256x14x14
+#             nn.BatchNorm2d(hidden_dims // 2),
+#             nn.ELU(True),
+#             nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),  # 256x14x14 -> 128x28x28
+#             nn.BatchNorm2d(hidden_dims // 4),
+#             nn.ELU(True),
+#             nn.ConvTranspose2d(hidden_dims // 4, 1, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x28x28 -> 1x56x56
+#         )
+
+#     def forward(self, x):
+#         x = self.fc(x)
+#         x = self.unflatten(x)
+#         x = self.upsample(x)
+#         # attention_map = x + self.bias
+#         attention_map = x
+
+#         # Reshape attention map for softmax
+#         batch_size = attention_map.size(0)
+#         attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
+
+#         # Apply softmax
+#         attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
+
+#         # print("Attention Map Mean: ", attention_map.mean())
+#         # print("Attention Map Size: ", attention_map_flat.shape)
+#         # print("Attention Map: ", attention_map_flat[0, :10])
+
+#         # Reshape back to image_size x image_size
+#         attention_map = attention_map_flat.view(batch_size, 1, self.attention_size, self.attention_size)
+
+#         # Interpolate to the desired image size
+#         attention_map = F.interpolate(attention_map, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
+
+#         # # Compute top 10% threshold
+#         # top_k = int(0.1 * attention_map.numel() / batch_size)
+#         # top_values, _ = torch.topk(attention_map.view(batch_size, -1), top_k, dim=1)
+#         # threshold = top_values[:, -1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+
+#         # # Create binary map
+#         # binary_map = (attention_map >= threshold).float()
+
+#         # # Create the final attention map
+#         # attention_map = binary_map + attention_map - attention_map.detach()
+
+#         return attention_map
+    
+
 class Attention(nn.Module):
     def __init__(self, input_dims=100, hidden_dims=512, output_channels=1, initial_size=7, image_size=224, attention_size=224//4):
         super(Attention, self).__init__()
@@ -572,59 +640,29 @@ class Attention(nn.Module):
         self.bias = 10
 
         self.fc = nn.Sequential(
-            nn.Linear(input_dims, input_dims),
+            nn.Linear(input_dims, attention_size * attention_size // 2),
             nn.ELU(True),
-            nn.Linear(input_dims, hidden_dims * initial_size * initial_size)
+            nn.Linear(attention_size * attention_size // 2, attention_size * attention_size)
         )
 
-        self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
-
-        self.upsample = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 512x7x7 -> 256x14x14
-            nn.BatchNorm2d(hidden_dims // 2),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),  # 256x14x14 -> 128x28x28
-            nn.BatchNorm2d(hidden_dims // 4),
-            nn.ELU(True),
-            nn.ConvTranspose2d(hidden_dims // 4, 1, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x28x28 -> 1x56x56
-        )
+        self.unflatten = nn.Unflatten(dim=1, unflattened_size=(output_channels, attention_size, attention_size))
 
     def forward(self, x):
         x = self.fc(x)
         x = self.unflatten(x)
-        x = self.upsample(x)
-        # attention_map = x + self.bias
-        attention_map = x
-
-        # Reshape attention map for softmax
-        batch_size = attention_map.size(0)
-        attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
-
-        # Apply softmax
-        attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
-
-        # print("Attention Map Mean: ", attention_map.mean())
-        # print("Attention Map Size: ", attention_map_flat.shape)
-        # print("Attention Map: ", attention_map_flat[0, :10])
-
-        # Reshape back to image_size x image_size
-        attention_map = attention_map_flat.view(batch_size, 1, self.attention_size, self.attention_size)
 
         # Interpolate to the desired image size
-        attention_map = F.interpolate(attention_map, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
+        x = F.interpolate(x, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
 
-        # # Compute top 10% threshold
-        # top_k = int(0.1 * attention_map.numel() / batch_size)
-        # top_values, _ = torch.topk(attention_map.view(batch_size, -1), top_k, dim=1)
-        # threshold = top_values[:, -1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        # Reshape Attention Map and apply Softmax
+        batch_size = x.size(0)
+        x_flat = x.view(batch_size, -1)                                                 # [batch_size, image_size^2]
+        x_flat = torch.softmax(x_flat, dim=1) * self.image_size * self.image_size
 
-        # # Create binary map
-        # binary_map = (attention_map >= threshold).float()
+        # Reshape back to image_size x image_size
+        x = x_flat.view(batch_size, 1, self.image_size, self.image_size)
 
-        # # Create the final attention map
-        # attention_map = binary_map + attention_map - attention_map.detach()
-
-        return attention_map
+        return x
     
 
 class MLP(nn.Module):
@@ -640,8 +678,14 @@ class MLP(nn.Module):
         return self.fc(x)
 
 
+def freeze(model):
+
+    for param in model.parameters():
+        param.requires_grad = False
+
+
 class CrossView(nn.Module):
-    def __init__(self, n_phi, n_encoded, hidden_dims, image_size, output_channels=3, debug=False):
+    def __init__(self, n_phi, n_encoded, hidden_dims, image_size, output_channels=3, pretrained=True, debug=False):
         super(CrossView, self).__init__()
 
         self.encoder_A = Encoder(latent_dim=n_encoded)
@@ -654,6 +698,14 @@ class CrossView(nn.Module):
         
         self.image_size = image_size
         self.debug = debug
+
+        if pretrained:
+            encoder_A_path = os.path.join('pretrained_models', 'encoder_A.pth')
+            encoder_G_path = os.path.join('pretrained_models', 'encoder_G.pth')
+            self.encoder_A.load_state_dict(torch.load(encoder_A_path))
+            self.encoder_G.load_state_dict(torch.load(encoder_G_path))
+            freeze(self.encoder_A)
+            freeze(self.encoder_G)
     
     def forward(self, images_A, images_G):
 
