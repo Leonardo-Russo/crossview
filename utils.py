@@ -557,74 +557,6 @@ class Decoder(nn.Module):
         x = self.unflatten(x)
         x = self.upsample(x)
         return x
-
-
-# class Attention(nn.Module):
-#     def __init__(self, input_dims=100, hidden_dims=512, output_channels=1, initial_size=7, image_size=224, attention_size=224//4):
-#         super(Attention, self).__init__()
-
-#         self.input_dims = input_dims
-#         self.hidden_dims = hidden_dims
-#         self.output_channels = output_channels
-#         self.initial_size = initial_size
-#         self.image_size = image_size
-#         self.attention_size = attention_size
-#         self.bias = 10
-
-#         self.fc = nn.Sequential(
-#             nn.Linear(input_dims, input_dims),
-#             nn.ELU(True),
-#             nn.Linear(input_dims, hidden_dims * initial_size * initial_size)
-#         )
-
-#         self.unflatten = nn.Unflatten(dim=1, unflattened_size=(hidden_dims, initial_size, initial_size))
-
-#         self.upsample = nn.Sequential(
-#             nn.ConvTranspose2d(hidden_dims, hidden_dims // 2, kernel_size=3, stride=2, padding=1, output_padding=1),  # 512x7x7 -> 256x14x14
-#             nn.BatchNorm2d(hidden_dims // 2),
-#             nn.ELU(True),
-#             nn.ConvTranspose2d(hidden_dims // 2, hidden_dims // 4, kernel_size=3, stride=2, padding=1, output_padding=1),  # 256x14x14 -> 128x28x28
-#             nn.BatchNorm2d(hidden_dims // 4),
-#             nn.ELU(True),
-#             nn.ConvTranspose2d(hidden_dims // 4, 1, kernel_size=3, stride=2, padding=1, output_padding=1),  # 128x28x28 -> 1x56x56
-#         )
-
-#     def forward(self, x):
-#         x = self.fc(x)
-#         x = self.unflatten(x)
-#         x = self.upsample(x)
-#         # attention_map = x + self.bias
-#         attention_map = x
-
-#         # Reshape attention map for softmax
-#         batch_size = attention_map.size(0)
-#         attention_map_flat = attention_map.view(batch_size, -1)  # [batch_size, image_size^2]
-
-#         # Apply softmax
-#         attention_map_flat = torch.softmax(attention_map_flat, dim=1) * self.attention_size * self.attention_size
-
-#         # print("Attention Map Mean: ", attention_map.mean())
-#         # print("Attention Map Size: ", attention_map_flat.shape)
-#         # print("Attention Map: ", attention_map_flat[0, :10])
-
-#         # Reshape back to image_size x image_size
-#         attention_map = attention_map_flat.view(batch_size, 1, self.attention_size, self.attention_size)
-
-#         # Interpolate to the desired image size
-#         attention_map = F.interpolate(attention_map, size=(self.image_size, self.image_size), mode='bilinear', align_corners=True)
-
-#         # # Compute top 10% threshold
-#         # top_k = int(0.1 * attention_map.numel() / batch_size)
-#         # top_values, _ = torch.topk(attention_map.view(batch_size, -1), top_k, dim=1)
-#         # threshold = top_values[:, -1].unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-#         # # Create binary map
-#         # binary_map = (attention_map >= threshold).float()
-
-#         # # Create the final attention map
-#         # attention_map = binary_map + attention_map - attention_map.detach()
-
-#         return attention_map
     
 
 class Attention(nn.Module):
@@ -663,6 +595,13 @@ class Attention(nn.Module):
         x = x_flat.view(batch_size, 1, self.image_size, self.image_size)
 
         return x
+
+
+def attention_regularization(attention_map):
+    # Compute the total variation loss for the attention map
+    diff_i = torch.mean(torch.abs(attention_map[:, :, :, :-1] - attention_map[:, :, :, 1:]))
+    diff_j = torch.mean(torch.abs(attention_map[:, :, :-1, :] - attention_map[:, :, 1:, :]))
+    return diff_i + diff_j
     
 
 class MLP(nn.Module):
@@ -709,7 +648,7 @@ class CrossView(nn.Module):
     
     def forward(self, images_A, images_G):
 
-        skip_attention = False
+        skip_attention = True
 
         # Encode images A and G
         encoded_A = self.encoder_A(images_A)

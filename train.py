@@ -67,9 +67,12 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
             loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
 
-            # # My Tweak
-            # loss_A = criterion(reconstructed_A, images_A)
-            # loss_G = criterion(reconstructed_G, images_G)
+            # Regularize the attention maps
+            reg_loss_A = attention_regularization(attention_A)
+            reg_loss_G = attention_regularization(attention_G)
+
+            reg_lambda = 1e-4
+            total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
 
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
@@ -149,7 +152,13 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             # Compute Total Loss using HuberLoss
             loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
             loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
-            total_loss = loss_A + loss_G
+
+            # Regularize the attention maps
+            reg_loss_A = attention_regularization(attention_A)
+            reg_loss_G = attention_regularization(attention_G)
+
+            reg_lambda = 1e-4
+            total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
             val_loss += total_loss.item()
 
             # Visualize Attention Maps and Reconstructions for a batch during validation
