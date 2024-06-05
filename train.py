@@ -11,6 +11,7 @@ from torchvision.transforms.functional import to_tensor, to_pil_image
 import matplotlib.pyplot as plt
 import shutil
 from utils import *
+from model import *
 from skimage.metrics import structural_similarity as ssim
 import matplotlib.pyplot as plt
 import argparse
@@ -39,6 +40,8 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     patience_counter = 0
     best_model_path = None
 
+    loss_map = False
+
     for epoch in range(epochs):
         
         model.train()
@@ -52,27 +55,35 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
             # Forward Pass
             reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G = model(images_A, images_G)
 
-            # Compute pixel-wise loss maps and average across channels
-            loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
-            loss_map_G = torch.abs(reconstructed_G - images_G).mean(dim=1, keepdim=True)
+            if loss_map:
 
-            if debug:
-                print(f"Loss A: {loss_map_A.shape}, Attention A: {attention_A.shape}, ")
+                # Compute pixel-wise loss maps and average across channels
+                loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
+                loss_map_G = torch.abs(reconstructed_G - images_G).mean(dim=1, keepdim=True)
 
-            # Apply Attention to Loss Maps
-            attended_loss_A = loss_map_A * attention_A
-            attended_loss_G = loss_map_G * attention_G
+                if debug:
+                    print(f"Loss A: {loss_map_A.shape}, Attention A: {attention_A.shape}, ")
 
-            # Compute Total Loss using HuberLoss
-            loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
-            loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
+                # Apply Attention to Loss Maps
+                attended_loss_A = loss_map_A * attention_A
+                attended_loss_G = loss_map_G * attention_G
 
-            # Regularize the attention maps
-            reg_loss_A = attention_regularization(attention_A)
-            reg_loss_G = attention_regularization(attention_G)
+                # Compute Total Loss using HuberLoss
+                loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
+                loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
 
-            reg_lambda = 1e-4
-            total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
+                # Regularize the attention maps
+                reg_loss_A = attention_regularization(attention_A)
+                reg_loss_G = attention_regularization(attention_G)
+
+                reg_lambda = 1e-4
+                total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
+
+            else:
+
+                # Compute Total Loss using HuberLoss
+                loss_A = criterion(reconstructed_A, images_A)
+                loss_G = criterion(reconstructed_G, images_G)
 
             total_loss = loss_A + loss_G
             running_loss += total_loss.item()
