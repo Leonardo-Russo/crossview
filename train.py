@@ -18,7 +18,6 @@ import argparse
 
 
 def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
-
     model.to(device)
 
     model_path = os.path.join('models', save_path)
@@ -34,8 +33,10 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     save_dataset_samples(train_loader, os.path.join(model_path, 'training_samples.png'), num_images=16, title='Training Samples')
     save_dataset_samples(val_loader, os.path.join(model_path, 'validation_samples.png'), num_images=16, title='Validation Samples')
 
-    train_losses = []
-    val_losses = []
+    train_huber_losses = []
+    val_huber_losses = []
+    train_ssim_losses = []
+    val_ssim_losses = []
     best_val_loss = np.inf
     patience_counter = 0
     best_model_path = None
@@ -45,84 +46,59 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     for epoch in range(epochs):
         
         model.train()
-        running_loss = 0.0
+        running_huber_loss = 0.0
+        running_ssim_loss = 0.0
 
         for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
-
-            # Get images on device
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
             reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G = model(images_A, images_G)
 
-            if loss_map:
+            # Compute HuberLoss
+            loss_A = criterion(reconstructed_A, images_A)
+            loss_G = criterion(reconstructed_G, images_G)
+            huber_loss = loss_A + loss_G
+            running_huber_loss += huber_loss.item()
 
-                # Compute pixel-wise loss maps and average across channels
-                loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
-                loss_map_G = torch.abs(reconstructed_G - images_G).mean(dim=1, keepdim=True)
-
-                if debug:
-                    print(f"Loss A: {loss_map_A.shape}, Attention A: {attention_A.shape}, ")
-
-                # Apply Attention to Loss Maps
-                attended_loss_A = loss_map_A * attention_A
-                attended_loss_G = loss_map_G * attention_G
-
-                # Compute Total Loss using HuberLoss
-                loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
-                loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
-
-                # Regularize the attention maps
-                reg_loss_A = attention_regularization(attention_A)
-                reg_loss_G = attention_regularization(attention_G)
-
-                reg_lambda = 1e-4
-                total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
-
-            else:
-
-                # Compute Total Loss using HuberLoss
-                loss_A = criterion(reconstructed_A, images_A)
-                loss_G = criterion(reconstructed_G, images_G)
-
-            total_loss = loss_A + loss_G
-            running_loss += total_loss.item()
+            # Compute SSIM Loss
+            ssim_loss_A = ssim_loss(reconstructed_A, images_A)
+            ssim_loss_G = ssim_loss(reconstructed_G, images_G)
+            ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+            running_ssim_loss += ssim_loss_value.item()
 
             # Reset Gradients
             optimizer.zero_grad()
             
             # Backward Propagation and Optimization Step
-            total_loss.backward()
+            huber_loss.backward()
             optimizer.step()
 
-            # Print shapes for debugging
-            if debug:
-                print(f"Reconstructed A: {reconstructed_A.shape}, Attention A: {attention_A.shape}, "
-                    f"Loss Map A: {loss_map_A.shape}, Attended Loss A: {attended_loss_A.shape}, Loss A: {loss_A}")
-
-
-        train_loss = running_loss / len(train_loader)
-        train_losses.append(train_loss)
+        train_huber_loss = running_huber_loss / len(train_loader)
+        train_ssim_loss = running_ssim_loss / len(train_loader)
+        train_huber_losses.append(train_huber_loss)
+        train_ssim_losses.append(train_ssim_loss)
 
         # Validation
-        val_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
-        val_losses.append(val_loss)
+        val_huber_loss, val_ssim_loss = validate(model, val_loader, criterion, epoch, epochs, results_path, device)
+        val_huber_losses.append(val_huber_loss)
+        val_ssim_losses.append(val_ssim_loss)
 
         # Check for Best Model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_huber_loss < best_val_loss:
+            best_val_loss = val_huber_loss
             patience_counter = 0
 
-            if best_model_path is not None and os.path.exists(best_model_path):     # delete previous best model if exists
+            if best_model_path is not None and os.path.exists(best_model_path):
                 os.remove(best_model_path)
 
             best_model_path = os.path.join(model_path, f'best_model_epoch_{epoch+1}.pth')
-            torch.save(model.state_dict(), best_model_path)                 # save the best model
+            torch.save(model.state_dict(), best_model_path)
         else:
             patience_counter += 1
 
         # Update the plot with the current losses
-        update_plot(epoch + 1, train_losses, val_losses, metrics_path)
+        update_plot(epoch + 1, train_huber_losses, val_huber_losses, train_ssim_losses, val_ssim_losses, metrics_path)
 
     # Save the Model
     torch.save(model.state_dict(), os.path.join(model_path, f'last_model_epoch_{epoch+1}.pth'))
@@ -132,58 +108,52 @@ def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=
     if best_model_path:
         print(f'Loading the model from {best_model_path}...')
         model.load_state_dict(torch.load(best_model_path))
-        final_val_loss = validate(model, val_loader, criterion, "best", epochs, results_path, device)
+        final_val_loss, final_val_ssim_loss = validate(model, val_loader, criterion, "best", epochs, results_path, device)
         print(f'Best Validation Loss: {final_val_loss:.4f}')
 
 
 def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
-    
     model.eval()
-    val_loss = 0
+    val_huber_loss = 0
+    val_ssim_loss = 0
     first_batch = True
     skip_attention = True
 
     with torch.no_grad():
         for images_A, images_G in val_loader:
-
-            # Get images on device
             images_A, images_G = images_A.to(device), images_G.to(device)
 
             # Forward Pass
             reconstructed_A, reconstructed_G, attention_A, attention_G, attended_A, attended_G = model(images_A, images_G)
 
-            # Compute pixel-wise loss maps and average across channels
-            loss_map_A = torch.abs(reconstructed_A - images_A).mean(dim=1, keepdim=True)
-            loss_map_G = torch.abs(reconstructed_G - images_G).mean(dim=1, keepdim=True)
+            # Compute HuberLoss
+            loss_A = criterion(reconstructed_A, images_A)
+            loss_G = criterion(reconstructed_G, images_G)
+            huber_loss = loss_A + loss_G
+            val_huber_loss += huber_loss.item()
 
-            # Apply Attention to Loss Maps
-            attended_loss_A = loss_map_A * attention_A
-            attended_loss_G = loss_map_G * attention_G
+            # Compute SSIM Loss
+            ssim_loss_A = ssim_loss(reconstructed_A, images_A)
+            ssim_loss_G = ssim_loss(reconstructed_G, images_G)
+            ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+            val_ssim_loss += ssim_loss_value.item()
 
-            # Compute Total Loss using HuberLoss
-            loss_A = criterion(attended_loss_A, torch.zeros_like(attended_loss_A))
-            loss_G = criterion(attended_loss_G, torch.zeros_like(attended_loss_G))
-
-            # Regularize the attention maps
-            reg_loss_A = attention_regularization(attention_A)
-            reg_loss_G = attention_regularization(attention_G)
-
-            reg_lambda = 1e-4
-            total_loss = loss_A + loss_G + reg_lambda * (reg_loss_A + reg_loss_G)
-            val_loss += total_loss.item()
-
-            # Visualize Attention Maps and Reconstructions for a batch during validation
             if first_batch:
                 first_batch = False
                 if epoch != "best":
-                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, attended_loss_A, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, attended_loss_G, attended_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    # visualize_attention_reconstruction(images_A, reconstructed_A, None, attention_A, None, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    # visualize_attention_reconstruction(images_G, reconstructed_G, None, attention_G, None, attended_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
+                    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
+                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
                 else:
-                    visualize_attention_reconstruction(images_A, reconstructed_A, loss_map_A, attention_A, attended_loss_A, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
-                    visualize_attention_reconstruction(images_G, reconstructed_G, loss_map_G, attention_G, attended_loss_G, attended_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
+                    # visualize_attention_reconstruction(images_A, reconstructed_A, None, attention_A, None, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
+                    # visualize_attention_reconstruction(images_G, reconstructed_G, None, attention_G, None, attended_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
+                    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
+                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
 
-    val_avg_loss = val_loss / len(val_loader)
-    return val_avg_loss
+    val_avg_huber_loss = val_huber_loss / len(val_loader)
+    val_avg_ssim_loss = val_ssim_loss / len(val_loader)
+    return val_avg_huber_loss, val_avg_ssim_loss
 
 
 if __name__ == '__main__':
@@ -226,7 +196,6 @@ if __name__ == '__main__':
         transforms.CenterCrop((image_size, image_size)),
         transforms.ToTensor()
     ])
-
 
     transform_aerial = transforms.Compose([
         transforms.Resize((int(image_size*aerial_scaling), int(image_size*aerial_scaling))),
