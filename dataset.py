@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import os
-from PIL import Image
+from PIL import Image, ImageFile, ImageChops
 from torchvision import transforms
 import torchvision.models as models
 from torchvision.models import VGG16_Weights
@@ -78,7 +78,7 @@ def save_dataset_samples(dataloader, save_path=None, num_images=16, title="Datas
     plt.close()
 
 
-def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
+def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8, groundtype='panos'):
     """
     Function to sample a percentage of the dataset and split it into training and validation sets.
     
@@ -91,21 +91,27 @@ def sample_paired_images(dataset_path, sample_percentage=0.2, split_ratio=0.8):
         train_filenames (list): List of training filenames (tuples of panorama and satellite image paths).
         val_filenames (list): List of validation filenames (tuples of panorama and satellite image paths).
     """
-    panorama_dir = os.path.join(dataset_path, 'streetview', 'panos')
+    
+    if groundtype == 'panos':
+        ground_dir = os.path.join(dataset_path, 'streetview', 'panos')
+    elif groundtype == 'cutouts':
+        ground_dir = os.path.join(dataset_path, 'streetview', 'cutouts')
+    else:   
+        raise ValueError("Invalid groundtype. Choose either 'panos' or 'cutouts'.")
     satellite_dir = os.path.join(dataset_path, 'streetview_aerial')
 
     paired_filenames = []
-    for root, _, files in os.walk(panorama_dir):
+    for root, _, files in os.walk(ground_dir):
         for file in files:
             if file.endswith('.jpg'):
-                pano_path = os.path.join(root, file)
-                lat, lon = get_metadata(pano_path)
+                ground_path = os.path.join(root, file)
+                lat, lon = get_metadata(ground_path)
                 if lat is None or lon is None:
                     continue
                 zoom = 18  # Only consider zoom level 18
                 sat_path = get_aerial_path(satellite_dir, lat, lon, zoom)
                 if os.path.exists(sat_path):
-                    paired_filenames.append((pano_path, sat_path))
+                    paired_filenames.append((ground_path, sat_path))
     
     num_to_select = int(len(paired_filenames) * sample_percentage)
     selected_filenames = random.sample(paired_filenames, num_to_select)
@@ -123,6 +129,9 @@ def get_metadata(fname):
         parts = fname[:-4].rsplit('/', 1)[1].split('_')
         if len(parts) == 2:
             lat, lon = parts
+            return lat, lon
+        elif len(parts) == 3:
+            lat, lon, orientation = parts
             return lat, lon
         else:
             print(f"Unexpected filename format: {fname}")
@@ -202,3 +211,20 @@ class SampledPairedImagesDataset(Dataset):
             sat_image = self.transform_aerial(sat_image)
 
         return sat_image, pano_image
+    
+
+class RandomHorizontalShiftWithWrap:
+    def __init__(self, shift_range):
+        self.shift_range = shift_range
+
+    def __call__(self, img):
+        shift = np.random.uniform(-self.shift_range, self.shift_range) * img.width
+        return ImageChops.offset(img, int(shift), 0)
+
+class RandomRotationWithExpand:
+    def __init__(self, degrees):
+        self.degrees = degrees
+
+    def __call__(self, img):
+        angle = np.random.uniform(-self.degrees, self.degrees)
+        return img.rotate(angle, resample=Image.BICUBIC, expand=True)

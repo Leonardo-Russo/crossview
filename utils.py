@@ -324,6 +324,20 @@ class PerceptualLoss(nn.Module):
         loss = nn.functional.l1_loss(reconstructed_features, target_features)
         
         return loss
+    
+class MyPerceptualLoss(nn.Module):
+    def __init__(self, encoder):
+        super(MyPerceptualLoss, self).__init__()
+        
+
+    def forward(self, reconstructed, original):
+
+        # Compute features and the loss
+        reconstructed_features = self.vgg(reconstructed)
+        target_features = self.vgg(original)
+        loss = nn.functional.l1_loss(reconstructed_features, target_features)
+        
+        return loss
 
 
 def attention_regularization(attention_map):
@@ -383,7 +397,7 @@ def ssim_loss(img1, img2):
 
 
 class CombinedLoss(nn.Module):
-    def __init__(self, perceptual_loss, ssim_weight=0.5):
+    def __init__(self, perceptual_loss=PerceptualLoss(), ssim_weight=0.5):
         super(CombinedLoss, self).__init__()
         self.perceptual_loss = perceptual_loss
         self.ssim_weight = ssim_weight
@@ -392,3 +406,16 @@ class CombinedLoss(nn.Module):
         perceptual = self.perceptual_loss(reconstructed, original)
         ssim_l = 1 - ssim_loss(reconstructed, original)
         return perceptual + self.ssim_weight * ssim_l
+    
+
+class HuberSSIMLoss(nn.Module):
+    def __init__(self, huber_weight=0.5, ssim_weight=0.5):
+        super(HuberSSIMLoss, self).__init__()
+        self.ssim_weight = ssim_weight
+        self.huber_weight = huber_weight
+        self.huber = nn.HuberLoss()
+
+    def forward(self, reconstructed, original):
+        huber_l = self.huber(reconstructed, original)
+        ssim_l = 1 - ssim_loss(reconstructed, original)
+        return self.ssim_weight * ssim_l + self.huber_weight * ssim_l

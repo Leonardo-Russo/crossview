@@ -2,20 +2,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-from PIL import Image, ImageFile
+from PIL import Image, ImageFile, ImageOps
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
-from torchvision.transforms.functional import to_tensor, to_pil_image
+import numpy as np
 import matplotlib.pyplot as plt
-import shutil
+from skimage.metrics import structural_similarity as ssim
+import argparse
 from utils import *
 from model import *
 from dataset import *
-from skimage.metrics import structural_similarity as ssim
-import matplotlib.pyplot as plt
-import argparse
 
 
 def train(model, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', debug=False):
@@ -142,13 +140,9 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
             if first_batch:
                 first_batch = False
                 if epoch != "best":
-                    # visualize_attention_reconstruction(images_A, reconstructed_A, None, attention_A, None, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction_attention.png'))
-                    # visualize_attention_reconstruction(images_G, reconstructed_G, None, attention_G, None, attended_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction_attention.png'))
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
                     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
                 else:
-                    # visualize_attention_reconstruction(images_A, reconstructed_A, None, attention_A, None, attended_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction_attention.png'))
-                    # visualize_attention_reconstruction(images_G, reconstructed_G, None, attention_G, None, attended_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction_attention.png'))
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
                     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
 
@@ -160,8 +154,7 @@ def validate(model, val_loader, criterion, epoch, epochs, results_path, device):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Train a model.')
-    parser.add_argument('save_path', nargs='?', const='untitled', default='untitled', type=str, help='Path to save the model and results')
-    parser.add_argument('--save_path', '-s', type=str, help='Path to save the model and results', dest='save_path')
+    parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     args = parser.parse_args()
 
     # Constants
@@ -189,10 +182,16 @@ if __name__ == '__main__':
     weight_decay = 1e-5
     optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
     criterion = nn.HuberLoss()
-    # criterion = PerceptualLoss()
 
     # Transformations
-    transform_ground = transforms.Compose([
+    transform_panos = transforms.Compose([
+        RandomHorizontalShiftWithWrap(shift_range=0.2),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomResizedCrop(size=image_size, scale=(0.8, 1.0)),
+        transforms.ToTensor()
+    ])
+
+    transform_cutouts = transforms.Compose([
         transforms.Resize((image_size, image_size)),
         transforms.CenterCrop((image_size, image_size)),
         transforms.ToTensor()
@@ -200,17 +199,8 @@ if __name__ == '__main__':
 
     transform_aerial = transforms.Compose([
         transforms.Resize((int(image_size*aerial_scaling), int(image_size*aerial_scaling))),
+        transforms.RandomRotation(degrees=360, resample=Image.BICUBIC, expand=True),
         transforms.CenterCrop((image_size, image_size)),
-        transforms.ToTensor()
-    ])
-
-    transform_aug = transforms.Compose([
-        transforms.Resize((image_size, image_size)),
-        transforms.CenterCrop((image_size, image_size)),
-        transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.5),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(degrees=15),
-        transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 2.0))], p=0.5),
         transforms.ToTensor()
     ])
 
@@ -218,14 +208,19 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
-    train_filenames, val_filenames = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8)
+    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='panos')
+    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
 
     # Define the Datasets
-    train_dataset = SampledPairedImagesDataset(train_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
-    val_dataset = SampledPairedImagesDataset(val_filenames, transform_aerial=transform_aerial, transform_ground=transform_ground)
+    train_dataset_panos = SampledPairedImagesDataset(train_filenames_panos, transform_aerial=transform_aerial, transform_ground=transform_panos)
+    val_dataset_panos = SampledPairedImagesDataset(val_filenames_panos, transform_aerial=transform_aerial, transform_ground=transform_panos)
+    train_dataset_cutouts = SampledPairedImagesDataset(train_filenames_cutouts, transform_aerial=transform_aerial, transform_ground=transform_cutouts)
+    val_dataset_cutouts = SampledPairedImagesDataset(val_filenames_cutouts, transform_aerial=transform_aerial, transform_ground=transform_cutouts)
 
     # Define the DataLoaders
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    train_dataloader_panos = DataLoader(train_dataset_panos, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    val_dataloader_panos = DataLoader(val_dataset_panos, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    train_dataloader_cutouts = DataLoader(train_dataset_cutouts, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    val_dataloader_cutouts = DataLoader(val_dataset_cutouts, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
-    train(model, train_dataloader, val_dataloader, device, criterion, optimizer, epochs=100, save_path=args.save_path, debug=False)
+    train(model, train_dataloader_panos, val_dataloader_panos, device, criterion, optimizer, epochs=100, save_path=args.save_path, debug=False)
