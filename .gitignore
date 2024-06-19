@@ -6,4 +6,3 @@ archive/old results/
 pretrained_models/
 autoencoders/**/*.pth
 autoencoders/
-models/
