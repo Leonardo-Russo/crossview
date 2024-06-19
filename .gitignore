@@ -3,3 +3,7 @@ archive/**/*.zip
 inference/
 models/**/*.pth
 archive/old results/
+pretrained_models/
+autoencoders/**/*.pth
+autoencoders/
+models/
