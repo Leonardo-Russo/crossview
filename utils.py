@@ -402,7 +402,6 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
 
     # Save or show the image
     if save_path != None:
-    if save_path != None:
         plt.savefig(save_path)
     else:
         plt.show()
