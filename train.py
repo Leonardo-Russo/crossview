@@ -3,14 +3,19 @@ import torch.nn as nn
 import torch.optim as optim
 import os
 from PIL import Image, ImageFile, ImageOps
+from PIL import Image, ImageFile, ImageOps
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
 import numpy as np
+import numpy as np
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
 import argparse
+from utils import *
+from model import *
+from dataset import *
 from utils import *
 from model import *
 from dataset import *
@@ -36,6 +41,10 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
     val_huber_losses = []
     train_ssim_losses = []
     val_ssim_losses = []
+    train_huber_losses = []
+    val_huber_losses = []
+    train_ssim_losses = []
+    val_ssim_losses = []
     best_val_loss = np.inf
     patience_counter = 0
     best_model_path = None
@@ -45,6 +54,8 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
     for epoch in range(epochs):
         
         model.train()
+        running_huber_loss = 0.0
+        running_ssim_loss = 0.0
         running_huber_loss = 0.0
         running_ssim_loss = 0.0
 
@@ -75,8 +86,13 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
             
             # Backward Propagation and Optimization Step
             huber_loss.backward()
+            huber_loss.backward()
             optimizer.step()
 
+        train_huber_loss = running_huber_loss / len(train_loader)
+        train_ssim_loss = running_ssim_loss / len(train_loader)
+        train_huber_losses.append(train_huber_loss)
+        train_ssim_losses.append(train_ssim_loss)
         train_huber_loss = running_huber_loss / len(train_loader)
         train_ssim_loss = running_ssim_loss / len(train_loader)
         train_huber_losses.append(train_huber_loss)
@@ -90,17 +106,22 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
         # Check for Best Model
         if val_huber_loss < best_val_loss:
             best_val_loss = val_huber_loss
+        if val_huber_loss < best_val_loss:
+            best_val_loss = val_huber_loss
             patience_counter = 0
 
+            if best_model_path is not None and os.path.exists(best_model_path):
             if best_model_path is not None and os.path.exists(best_model_path):
                 os.remove(best_model_path)
 
             best_model_path = os.path.join(model_path, f'best_model_epoch_{epoch+1}.pth')
             torch.save(model.state_dict(), best_model_path)
+            torch.save(model.state_dict(), best_model_path)
         else:
             patience_counter += 1
 
         # Update the plot with the current losses
+        update_plot(epoch + 1, train_huber_losses, val_huber_losses, train_ssim_losses, val_ssim_losses, metrics_path)
         update_plot(epoch + 1, train_huber_losses, val_huber_losses, train_ssim_losses, val_ssim_losses, metrics_path)
 
     # Save the Model
@@ -117,6 +138,8 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
 
 def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device):
     model.eval()
+    val_huber_loss = 0
+    val_ssim_loss = 0
     val_huber_loss = 0
     val_ssim_loss = 0
     first_batch = True
@@ -151,10 +174,17 @@ def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results
                 if epoch != "best":
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
                     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
+                    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
+                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
                 else:
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
                     visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
+                    visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
+                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
 
+    val_avg_huber_loss = val_huber_loss / len(val_loader)
+    val_avg_ssim_loss = val_ssim_loss / len(val_loader)
+    return val_avg_huber_loss, val_avg_ssim_loss
     val_avg_huber_loss = val_huber_loss / len(val_loader)
     val_avg_ssim_loss = val_ssim_loss / len(val_loader)
     return val_avg_huber_loss, val_avg_ssim_loss
@@ -163,6 +193,7 @@ def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Train a model.')
+    parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     parser.add_argument('--save_path', '-p', type=str, default='untitled', help='Path to save the model and results')
     args = parser.parse_args()
 
@@ -182,6 +213,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
+    model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels, pretrained=True).to(device)
     model = CrossView(n_phi, n_encoded, hidden_dims, image_size, output_channels=image_channels, pretrained=True).to(device)
     print(model)
 
@@ -227,6 +259,8 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
+    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='panos')
+    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
     train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='panos')
     train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
 

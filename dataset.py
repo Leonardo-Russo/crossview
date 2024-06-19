@@ -189,6 +189,7 @@ class PairedImagesDataset(Dataset):
         return pano_image, sat_image
     
 
+<<<<<<< HEAD
 class RandomHorizontalShiftWithWrap:
     def __init__(self, shift_range):
         self.shift_range = shift_range
@@ -207,6 +208,8 @@ class RandomRotationWithExpand:
         return img.rotate(angle, resample=Image.BICUBIC, expand=True)
     
 
+=======
+>>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 class SampledPairedImagesDataset(Dataset):
     def __init__(self, filenames, transform_aerial=None, transform_ground=None):
         self.filenames = filenames
@@ -231,6 +234,7 @@ class SampledPairedImagesDataset(Dataset):
         return sat_image, pano_image
     
 
+<<<<<<< HEAD
 class CombinedPairedImagesDataset(Dataset):
     def __init__(self, filenames_panos, filenames_cutouts, transform_aerial=None, transform_panos=None, transform_cutouts=None):
         self.filenames_panos = filenames_panos
@@ -260,3 +264,20 @@ class CombinedPairedImagesDataset(Dataset):
             aerial_image = self.transform_aerial(aerial_image)
         
         return aerial_image, ground_image
+=======
+class RandomHorizontalShiftWithWrap:
+    def __init__(self, shift_range):
+        self.shift_range = shift_range
+
+    def __call__(self, img):
+        shift = np.random.uniform(-self.shift_range, self.shift_range) * img.width
+        return ImageChops.offset(img, int(shift), 0)
+
+class RandomRotationWithExpand:
+    def __init__(self, degrees):
+        self.degrees = degrees
+
+    def __call__(self, img):
+        angle = np.random.uniform(-self.degrees, self.degrees)
+        return img.rotate(angle, resample=Image.BICUBIC, expand=True)
+>>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354

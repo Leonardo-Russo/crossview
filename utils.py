@@ -118,6 +118,63 @@ def visualize_reconstruction(original, reconstructed, epoch, save_path=None, num
 
 def visualize_reconstruction(original, reconstructed, epoch, save_path=None, num_images=16):
     """
+    Visualize a comparison of original, reconstructed images, and attention maps in a grid format.
+
+    Parameters:
+    - original (torch.Tensor): The original images tensor.
+    - reconstructed (torch.Tensor): The reconstructed images tensor.
+    - attention_maps (torch.Tensor): The attention maps tensor.
+    - epoch (int): Current epoch number for titling the plot.
+    - save_path (str, optional): Path to save the resulting plot. If None, the plot is displayed.
+    - num_images (int): Number of images to display from the batch.
+    """
+    # Ensure that we do not exceed the number of images in the batch
+    num_images = min(num_images, original.size(0))
+
+    # Randomly select indices for display
+    indices = torch.randperm(original.size(0))[:num_images]
+
+    # Select the images from the tensors
+    selected_original = original[indices].cpu()
+    selected_reconstructed = reconstructed[indices].cpu()
+
+    # Create grids
+    original_grid = make_grid(selected_original, nrow=int(num_images**0.5), normalize=False)
+    reconstructed_grid = make_grid(selected_reconstructed, nrow=int(num_images**0.5), normalize=False)
+
+    # Convert to numpy arrays
+    original_npimg = original_grid.numpy().transpose((1, 2, 0))
+    reconstructed_npimg = reconstructed_grid.numpy().transpose((1, 2, 0))
+
+    # Create figure and subplots
+    plt.figure(figsize=(16, 8))
+    plt.subplot(1, 2, 1)
+    plt.imshow(original_npimg)
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Original Images')
+    else:
+        plt.title(f'Best Model - Original Images')
+    plt.axis('off')
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(reconstructed_npimg)
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
+    else:
+        plt.title(f'Best Model - Reconstructed Images')
+    plt.axis('off')
+
+    # Save or show the image
+    if save_path != None:
+        plt.savefig(save_path)
+    else:
+        plt.show()
+
+    plt.close()
+
+
+def visualize_reconstruction(original, reconstructed, epoch, save_path=None, num_images=16):
+    """
     Visualize a comparison of original and reconstructed images in a grid format.
 
     Parameters:
@@ -189,11 +246,30 @@ def update_plot(epoch, train_huber_losses, val_huber_losses, train_ssim_losses, 
     plt.subplot(1, 2, 2)
     plt.plot(range(1, epoch + 1), train_ssim_losses, label='Training SSIM Loss')
     plt.plot(range(1, epoch + 1), val_ssim_losses, label='Validation SSIM Loss')
+def update_plot(epoch, train_huber_losses, val_huber_losses, train_ssim_losses, val_ssim_losses, save_path):
+    plt.figure(figsize=(16, 8))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(range(1, epoch + 1), train_huber_losses, label='Training Huber Loss')
+    plt.plot(range(1, epoch + 1), val_huber_losses, label='Validation Huber Loss')
     plt.xlabel('Epoch')
+    plt.ylabel('Huber Loss')
+    plt.legend()
+    plt.title('Training and Validation Huber Loss over Epochs')
+    plt.grid(True)
+
+    plt.subplot(1, 2, 2)
+    plt.plot(range(1, epoch + 1), train_ssim_losses, label='Training SSIM Loss')
+    plt.plot(range(1, epoch + 1), val_ssim_losses, label='Validation SSIM Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('SSIM Loss (1 - SSIM)')
     plt.ylabel('SSIM Loss (1 - SSIM)')
     plt.legend()
     plt.title('Training and Validation SSIM Loss over Epochs')
+    plt.title('Training and Validation SSIM Loss over Epochs')
     plt.grid(True)
+
+    plt.tight_layout()
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_path, 'loss_plot.png'))
@@ -258,10 +334,18 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
         plt.title(f'Epoch: {epoch + 1} - Original Images')
     else:
         plt.title(f'Best Model - Original Images')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Original Images')
+    else:
+        plt.title(f'Best Model - Original Images')
     plt.axis('off')
 
     plt.subplot(2, 3, 4)
     plt.imshow(reconstructed_npimg)
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
+    else:
+        plt.title(f'Best Model - Reconstructed Images')
     if epoch != "best":
         plt.title(f'Epoch: {epoch + 1} - Reconstructed Images')
     else:
@@ -274,10 +358,18 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
         plt.title(f'Epoch: {epoch + 1} - Loss Maps')
     else:
         plt.title(f'Best Model - Loss Maps')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Loss Maps')
+    else:
+        plt.title(f'Best Model - Loss Maps')
     plt.axis('off')
 
     plt.subplot(2, 3, 5)
     plt.imshow(attention_npimg, cmap='gray')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attention Maps')
+    else:
+        plt.title(f'Best Model - Attention Maps')
     if epoch != "best":
         plt.title(f'Epoch: {epoch + 1} - Attention Maps')
     else:
@@ -290,6 +382,10 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
         plt.title(f'Epoch: {epoch + 1} - Attended Loss Maps')
     else:
         plt.title(f'Best Model - Attended Loss Maps')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attended Loss Maps')
+    else:
+        plt.title(f'Best Model - Attended Loss Maps')
     plt.axis('off')
 
     plt.subplot(2, 3, 6)
@@ -298,9 +394,14 @@ def visualize_attention_reconstruction(original, reconstructed, loss_maps, atten
         plt.title(f'Epoch: {epoch + 1} - Attended Images')
     else:
         plt.title(f'Best Model - Attended Images')
+    if epoch != "best":
+        plt.title(f'Epoch: {epoch + 1} - Attended Images')
+    else:
+        plt.title(f'Best Model - Attended Images')
     plt.axis('off')
 
     # Save or show the image
+    if save_path != None:
     if save_path != None:
         plt.savefig(save_path)
     else:
