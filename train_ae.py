@@ -49,36 +49,41 @@ def train_ae(encoder, decoder, train_loader, val_loader, device, criterion, opti
         running_huber_loss = 0.0
         running_ssim_loss = 0.0
 
-        for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{epochs}', unit='batch') as pbar:
+            for images_A, images_G in train_loader:
 
-            # Get images on device
-            images_A, images_G = images_A.to(device), images_G.to(device)
+                # Get images on device
+                images_A, images_G = images_A.to(device), images_G.to(device)
 
-            # Forward Pass and Compute Loss
-            if image_type == 'aerial':
-                encoded_A = encoder(images_A)
-                reconstructed_A = decoder(encoded_A)
-                huber_loss = criterion(reconstructed_A, images_A)
-                ssim_loss_value = ssim_loss(reconstructed_A, images_A)
-            elif image_type == 'ground':
-                encoded_G = encoder(images_G)
-                reconstructed_G = decoder(encoded_G)
-                huber_loss = criterion(reconstructed_G, images_G)
-                ssim_loss_value = ssim_loss(reconstructed_G, images_G)
-            else:
-                raise ValueError('Invalid image type. Use either "aerial" or "ground".')
-            
-            ssim_loss_value = 1 - ssim_loss_value
+                # Forward Pass and Compute Loss
+                if image_type == 'aerial':
+                    encoded_A = encoder(images_A)
+                    reconstructed_A = decoder(encoded_A)
+                    huber_loss = criterion(reconstructed_A, images_A)
+                    ssim_loss_value = ssim_loss(reconstructed_A, images_A)
+                elif image_type == 'ground':
+                    encoded_G = encoder(images_G)
+                    reconstructed_G = decoder(encoded_G)
+                    huber_loss = criterion(reconstructed_G, images_G)
+                    ssim_loss_value = ssim_loss(reconstructed_G, images_G)
+                else:
+                    raise ValueError('Invalid image type. Use either "aerial" or "ground".')
+                
+                ssim_loss_value = 1 - ssim_loss_value
 
-            running_huber_loss += huber_loss.item()
-            running_ssim_loss += ssim_loss_value.item()
+                running_huber_loss += huber_loss.item()
+                running_ssim_loss += ssim_loss_value.item()
 
-            # Reset Gradients
-            optimizer.zero_grad()
-            
-            # Backward Propagation and Optimization Step
-            huber_loss.backward()
-            optimizer.step()
+                # Reset Gradients
+                optimizer.zero_grad()
+                
+                # Backward Propagation and Optimization Step
+                huber_loss.backward()
+                optimizer.step()
+
+                # Update the progress bar with the current loss
+                pbar.set_postfix({'Huber Loss': running_huber_loss / (pbar.n + 1), 'SSIM Loss': running_ssim_loss / (pbar.n + 1)})
+                pbar.update()
 
         train_huber_loss = running_huber_loss / len(train_loader)
         train_ssim_loss = running_ssim_loss / len(train_loader)
@@ -130,7 +135,6 @@ def validate(encoder, decoder, val_loader, criterion, epoch, epochs, results_pat
     val_huber_loss = 0
     val_ssim_loss = 0
     first_batch = True
-    skip_attention = True
 
     with torch.no_grad():
         for images_A, images_G in val_loader:
@@ -157,7 +161,7 @@ def validate(encoder, decoder, val_loader, criterion, epoch, epochs, results_pat
             val_huber_loss += huber_loss.item()
             val_ssim_loss += ssim_loss_value.item()
 
-            # Visualize Attention Maps and Reconstructions for a batch during validation
+            # Visualize Reconstructions for a batch during validation
             if first_batch:
                 first_batch = False
                 if epoch != "best":
@@ -236,8 +240,6 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
-    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
-    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='cutouts')
     train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
     train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='cutouts')
 

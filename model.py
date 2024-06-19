@@ -182,12 +182,13 @@ class SparseEncoder(nn.Module):
         threshold = top_values[:, -1].unsqueeze(-1)
         binary_flat = (x_flat >= threshold).float()
 
-        x = binary_flat*x_flat + x_flat - x_flat.detach()
+        x = binary_flat*x_flat.detach() + x_flat - x_flat.detach()
 
         # print("Sparse Encoder Output Size: ", x.shape)
         # print("Top Values: ", top_values[0, :10])
         # print("binary_flat shape: ", binary_flat.shape)
         # print("x_flat shape: ", x_flat.shape)
+        # print("Threshold shape: ", threshold.shape)
 
         return x
    
