@@ -2,13 +2,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-from PIL import Image, ImageFile, ImageOps
-from PIL import Image, ImageFile, ImageOps
+from PIL import Image, ImageFile
 from torchvision import transforms
 from torch.utils.data import Dataset, DataLoader
 from torchvision.utils import make_grid
 from tqdm import tqdm
-import numpy as np
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
@@ -16,7 +14,6 @@ import argparse
 from utils import *
 from model import *
 from dataset import *
-
 
 def train(model, train_loader, val_loader, device, criterion_A, criterion_G, optimizer, epochs=1, save_path='untitled', debug=False):
     model.to(device)
@@ -50,34 +47,39 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
         running_huber_loss = 0.0
         running_ssim_loss = 0.0
 
-        for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
-            images_A, images_G = images_A.to(device), images_G.to(device)
+        with tqdm(total=len(train_loader), desc=f'Epoch {epoch+1}/{epochs}', unit='batch') as pbar:
+            for images_A, images_G in train_loader:
+                images_A, images_G = images_A.to(device), images_G.to(device)
 
-            # Forward Pass
-            reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi = model(images_A, images_G)
+                # Forward Pass
+                reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi = model(images_A, images_G)
 
-            # Compute Pixel-wise Loss
-            if embedded_loss:
-                loss_A = nn.functional.l1_loss(encoded_A_phi, encoded_G)
-                loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
-            else:
-                loss_A = criterion_A(reconstructed_A, images_A)
-                loss_G = criterion_G(reconstructed_G, images_G)
-            huber_loss = loss_A + loss_G
-            running_huber_loss += huber_loss.item()
+                # Compute Pixel-wise Loss
+                if embedded_loss:
+                    loss_A = nn.functional.l1_loss(encoded_A_phi, encoded_G)
+                    loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
+                else:
+                    loss_A = criterion_A(reconstructed_A, images_A)
+                    loss_G = criterion_G(reconstructed_G, images_G)
+                huber_loss = loss_A + loss_G
+                running_huber_loss += huber_loss.item()
 
-            # Compute SSIM Loss
-            ssim_loss_A = ssim_loss(reconstructed_A, images_A)
-            ssim_loss_G = ssim_loss(reconstructed_G, images_G)
-            ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
-            running_ssim_loss += ssim_loss_value.item()
+                # Compute SSIM Loss
+                ssim_loss_A = ssim_loss(reconstructed_A, images_A)
+                ssim_loss_G = ssim_loss(reconstructed_G, images_G)
+                ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+                running_ssim_loss += ssim_loss_value.item()
 
-            # Reset Gradients
-            optimizer.zero_grad()
-            
-            # Backward Propagation and Optimization Step
-            huber_loss.backward()
-            optimizer.step()
+                # Reset Gradients
+                optimizer.zero_grad()
+                
+                # Backward Propagation and Optimization Step
+                huber_loss.backward()
+                optimizer.step()
+
+                # Update the progress bar with the current loss
+                pbar.set_postfix({'Huber Loss': running_huber_loss / (pbar.n + 1), 'SSIM Loss': running_ssim_loss / (pbar.n + 1)})
+                pbar.update()
 
         train_huber_loss = running_huber_loss / len(train_loader)
         train_ssim_loss = running_ssim_loss / len(train_loader)
@@ -119,8 +121,6 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
 
 def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device):
     model.eval()
-    val_huber_loss = 0
-    val_ssim_loss = 0
     val_huber_loss = 0
     val_ssim_loss = 0
     first_batch = True
@@ -231,8 +231,6 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
-    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='panos')
-    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
     train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='panos')
     train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=0.2, split_ratio=0.8, groundtype='cutouts')
 
