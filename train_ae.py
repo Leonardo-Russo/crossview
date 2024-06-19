@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import argparse
 
 
-def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loader_cutouts, val_loader_cutouts, device, criterion, optimizer, epochs=1, save_path='untitled', image_type='ground', debug=False):
+def train_ae(encoder, decoder, train_loader, val_loader, device, criterion, optimizer, epochs=1, save_path='untitled', image_type='ground', debug=False):
 
     encoder.to(device)
     decoder.to(device)
@@ -31,10 +31,8 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
     os.makedirs(metrics_path, exist_ok=True)
     os.makedirs(results_path, exist_ok=True)
 
-    save_dataset_samples(train_loader_panos, os.path.join(model_path, 'training_samples_panos.png'), num_images=16, title='Training Samples')
-    save_dataset_samples(val_loader_panos, os.path.join(model_path, 'validation_samples_panos.png'), num_images=16, title='Validation Samples')
-    save_dataset_samples(train_loader_cutouts, os.path.join(model_path, 'training_samples_cutouts.png'), num_images=16, title='Training Samples')
-    save_dataset_samples(val_loader_cutouts, os.path.join(model_path, 'validation_samples_cutouts.png'), num_images=16, title='Validation Samples')
+    save_dataset_samples(train_loader, os.path.join(model_path, 'training_samples_panos.png'), num_images=16, title='Training Samples')
+    save_dataset_samples(val_loader, os.path.join(model_path, 'validation_samples_panos.png'), num_images=16, title='Validation Samples')
 
     train_huber_losses = []
     val_huber_losses = []
@@ -50,8 +48,6 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         decoder.train()
         running_huber_loss = 0.0
         running_ssim_loss = 0.0
-
-        train_loader = random.choice([train_loader_panos, train_loader_cutouts])
 
         for images_A, images_G in tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}'):
 
@@ -90,7 +86,7 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         train_ssim_losses.append(train_ssim_loss)
 
         # Validation
-        val_huber_loss, val_ssim_loss = validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, epoch, epochs, results_path, image_type, device)
+        val_huber_loss, val_ssim_loss = validate(encoder, decoder, val_loader, criterion, epoch, epochs, results_path, image_type, device)
         val_huber_losses.append(val_huber_loss)
         val_ssim_losses.append(val_ssim_loss)
 
@@ -123,11 +119,11 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         print(f'Loading the model from {best_encoder_path}...')
         encoder.load_state_dict(torch.load(best_encoder_path))
         decoder.load_state_dict(torch.load(best_decoder_path))
-        final_val_loss = validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, "best", epochs, results_path, image_type, device)
+        final_val_loss = validate(encoder, decoder, val_loader, criterion, "best", epochs, results_path, image_type, device)
         print(f'Best Validation Loss: {final_val_loss:.4f}')
 
 
-def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, epoch, epochs, results_path, image_type, device):
+def validate(encoder, decoder, val_loader, criterion, epoch, epochs, results_path, image_type, device):
     
     encoder.eval()
     decoder.eval()
@@ -135,8 +131,6 @@ def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, 
     val_ssim_loss = 0
     first_batch = True
     skip_attention = True
-
-    val_loader = random.choice([val_loader_panos, val_loader_cutouts])
 
     with torch.no_grad():
         for images_A, images_G in val_loader:
@@ -205,7 +199,7 @@ if __name__ == '__main__':
     print(f"using device: {device}")
 
     # Initialize the Architecture
-    encoder = Encoder(latent_dim=n_encoded).to(device)
+    encoder = SparseEncoder(latent_dim=n_encoded, top_k=50).to(device)
     decoder = Decoder(input_dims=n_encoded, hidden_dims=hidden_dims, output_channels=3, initial_size=7).to(device)
     print(encoder, decoder)
 
@@ -225,7 +219,7 @@ if __name__ == '__main__':
     ])
 
     transform_panos = transforms.Compose([
-        RandomHorizontalShiftWithWrap(shift_range=0.2),
+        RandomHorizontalShiftWithWrap(shift_range=1.0),
         transforms.RandomHorizontalFlip(),
         transforms.RandomResizedCrop(size=image_size, scale=(0.8, 1.0)),
         transforms.ToTensor()
@@ -242,20 +236,18 @@ if __name__ == '__main__':
     ImageFile.LOAD_TRUNCATED_IMAGES = True
 
     # Sample paired images
-    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1, split_ratio=0.8, groundtype='panos')
-    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1, split_ratio=0.8, groundtype='cutouts')
+    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
+    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='cutouts')
+    train_filenames_panos, val_filenames_panos = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='panos')
+    train_filenames_cutouts, val_filenames_cutouts = sample_paired_images('/home/lrusso/cvusa', sample_percentage=1.0, split_ratio=0.8, groundtype='cutouts')
 
-    # Define the Datasets
-    train_dataset_panos = SampledPairedImagesDataset(train_filenames_panos, transform_aerial=transform_aerial, transform_ground=transform_panos)
-    val_dataset_panos = SampledPairedImagesDataset(val_filenames_panos, transform_aerial=transform_aerial, transform_ground=transform_panos)
-    train_dataset_cutouts = SampledPairedImagesDataset(train_filenames_cutouts, transform_aerial=transform_aerial, transform_ground=transform_cutouts)
-    val_dataset_cutouts = SampledPairedImagesDataset(val_filenames_cutouts, transform_aerial=transform_aerial, transform_ground=transform_cutouts)
+    # Define the Combined Dataset
+    train_dataset_combined = CombinedPairedImagesDataset(train_filenames_panos, train_filenames_cutouts, transform_aerial=transform_aerial, transform_panos=transform_panos, transform_cutouts=transform_cutouts)
+    val_dataset_combined = CombinedPairedImagesDataset(val_filenames_panos, val_filenames_cutouts, transform_aerial=transform_aerial, transform_panos=transform_panos, transform_cutouts=transform_cutouts)
 
     # Define the DataLoaders
-    train_dataloader_panos = DataLoader(train_dataset_panos, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-    val_dataloader_panos = DataLoader(val_dataset_panos, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-    train_dataloader_cutouts = DataLoader(train_dataset_cutouts, batch_size=batch_size, shuffle=shuffle, num_workers=8)
-    val_dataloader_cutouts = DataLoader(val_dataset_cutouts, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    train_dataloader_combined = DataLoader(train_dataset_combined, batch_size=batch_size, shuffle=shuffle, num_workers=8)
+    val_dataloader_combined = DataLoader(val_dataset_combined, batch_size=batch_size, shuffle=shuffle, num_workers=8)
 
     # Train the Autoencoder
-    train_ae(encoder, decoder, train_dataloader_panos, val_dataloader_panos, train_dataloader_cutouts, val_dataloader_cutouts, device, criterion, optimizer, epochs=100, save_path=args.save_path, image_type=args.image_type, debug=False)
+    train_ae(encoder, decoder, train_dataloader_combined, val_dataloader_combined, device, criterion, optimizer, epochs=100, save_path=args.save_path, image_type=args.image_type, debug=False)

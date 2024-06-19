@@ -96,6 +96,100 @@ class Encoder(nn.Module):
 		x = self.flatten(x)
 		x = self.fc(x)
 		return x
+     
+
+class SparseEncoder(nn.Module):
+
+	def __init__(self, latent_dim=50):
+		super(SparseEncoder, self).__init__()
+
+		self.cnn = nn.Sequential(
+            nn.Conv2d(3, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ELU(True),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ELU(True),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ELU(True),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ELU(True),
+            nn.Conv2d(512, 1024, 3, stride=2, padding=1),
+            nn.BatchNorm2d(1024),
+            nn.ELU(True)                # 3x224x224 -> 64x112x112 -> 128x56x56 -> 256x28x28 -> 512x14x14 -> 1024x7x7
+        )
+
+		self.flatten = nn.Flatten(start_dim=1)
+
+		self.fc = nn.Sequential(
+			nn.Linear(1024*7*7, 1000),
+			nn.ELU(True),
+			nn.Linear(1000, latent_dim)
+		)
+
+	def forward(self, x):
+		x = self.cnn(x)
+		# print("Encoder CNN Output Size: ", x.shape)
+		x = self.flatten(x)
+		x = self.fc(x)
+          
+		return x
+     
+
+class SparseEncoder(nn.Module):
+    def __init__(self, latent_dim=1024, top_k=50):
+        super(SparseEncoder, self).__init__()
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(3, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ELU(True),
+            nn.Conv2d(64, 128, 3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ELU(True),
+            nn.Conv2d(128, 256, 3, stride=2, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ELU(True),
+            nn.Conv2d(256, 512, 3, stride=2, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ELU(True),
+            nn.Conv2d(512, 1024, 3, stride=2, padding=1),
+            nn.BatchNorm2d(1024),
+            nn.ELU(True)
+        )
+
+        self.flatten = nn.Flatten(start_dim=1)
+
+        self.fc = nn.Sequential(
+            nn.Linear(1024 * 7 * 7, 5000),
+            nn.ELU(True),
+            nn.Linear(5000, latent_dim)
+        )
+
+        self.top_k = top_k
+
+    def forward(self, x):
+        x = self.cnn(x)
+        x = self.flatten(x)
+        x = self.fc(x)
+
+        # Apply the top-k operation
+        batch_size = x.size(0)
+        x_flat = x.view(batch_size, -1)  # Flatten to [batch_size, latent_dim]
+        top_values, _ = torch.topk(x_flat, self.top_k, dim=1)
+        threshold = top_values[:, -1].unsqueeze(-1)
+        binary_flat = (x_flat >= threshold).float()
+
+        x = binary_flat*x_flat + x_flat - x_flat.detach()
+
+        # print("Sparse Encoder Output Size: ", x.shape)
+        # print("Top Values: ", top_values[0, :10])
+        # print("binary_flat shape: ", binary_flat.shape)
+        # print("x_flat shape: ", x_flat.shape)
+
+        return x
    
 
 class Decoder(nn.Module):
