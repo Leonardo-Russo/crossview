@@ -36,15 +36,10 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
     save_dataset_samples(train_loader_cutouts, os.path.join(model_path, 'training_samples_cutouts.png'), num_images=16, title='Training Samples')
     save_dataset_samples(val_loader_cutouts, os.path.join(model_path, 'validation_samples_cutouts.png'), num_images=16, title='Validation Samples')
 
-<<<<<<< HEAD
     train_huber_losses = []
     val_huber_losses = []
     train_ssim_losses = []
     val_ssim_losses = []
-=======
-    train_losses = []
-    val_losses = []
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
     best_val_loss = np.inf
     patience_counter = 0
     best_encoder_path = None
@@ -53,12 +48,8 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         
         encoder.train()
         decoder.train()
-<<<<<<< HEAD
         running_huber_loss = 0.0
         running_ssim_loss = 0.0
-=======
-        running_loss = 0.0
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 
         train_loader = random.choice([train_loader_panos, train_loader_cutouts])
 
@@ -71,7 +62,6 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
             if image_type == 'aerial':
                 encoded_A = encoder(images_A)
                 reconstructed_A = decoder(encoded_A)
-<<<<<<< HEAD
                 huber_loss = criterion(reconstructed_A, images_A)
                 ssim_loss_value = ssim_loss(reconstructed_A, images_A)
             elif image_type == 'ground':
@@ -86,23 +76,11 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
 
             running_huber_loss += huber_loss.item()
             running_ssim_loss += ssim_loss_value.item()
-=======
-                loss = criterion(reconstructed_A, images_A)
-            elif image_type == 'ground':
-                encoded_G = encoder(images_G)
-                reconstructed_G = decoder(encoded_G)
-                loss = criterion(reconstructed_G, images_G)
-            else:
-                raise ValueError('Invalid image type. Use either "aerial" or "ground".')
-
-            running_loss += loss.item()
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 
             # Reset Gradients
             optimizer.zero_grad()
             
             # Backward Propagation and Optimization Step
-<<<<<<< HEAD
             huber_loss.backward()
             optimizer.step()
 
@@ -119,21 +97,6 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         # Check for Best Model
         if val_huber_loss < best_val_loss:
             best_val_loss = val_huber_loss
-=======
-            loss.backward()
-            optimizer.step()
-
-        train_loss = running_loss / len(train_loader)
-        train_losses.append(train_loss)
-
-        # Validation
-        val_loss = validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, epoch, epochs, results_path, image_type, device)
-        val_losses.append(val_loss)
-
-        # Check for Best Model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
             patience_counter = 0
 
             if best_encoder_path is not None and os.path.exists(best_encoder_path):     # delete previous best model if exists
@@ -148,11 +111,7 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
             patience_counter += 1
 
         # Update the plot with the current losses
-<<<<<<< HEAD
         update_plot(epoch + 1, train_huber_losses, val_huber_losses, train_ssim_losses, val_ssim_losses, metrics_path)
-=======
-        update_plot(epoch + 1, train_losses, val_losses, metrics_path)
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 
     # Save the Model
     torch.save(encoder.state_dict(), os.path.join(model_path, f'last_encoder_epoch_{epoch+1}.pth'))
@@ -164,11 +123,7 @@ def train_ae(encoder, decoder, train_loader_panos, val_loader_panos, train_loade
         print(f'Loading the model from {best_encoder_path}...')
         encoder.load_state_dict(torch.load(best_encoder_path))
         decoder.load_state_dict(torch.load(best_decoder_path))
-<<<<<<< HEAD
         final_val_loss = validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, "best", epochs, results_path, image_type, device)
-=======
-        final_val_loss = validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, "best", epochs, results_path, device)
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
         print(f'Best Validation Loss: {final_val_loss:.4f}')
 
 
@@ -176,12 +131,8 @@ def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, 
     
     encoder.eval()
     decoder.eval()
-<<<<<<< HEAD
     val_huber_loss = 0
     val_ssim_loss = 0
-=======
-    val_loss = 0
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
     first_batch = True
     skip_attention = True
 
@@ -197,7 +148,6 @@ def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, 
             if image_type == 'aerial':
                 encoded_A = encoder(images_A)
                 reconstructed_A = decoder(encoded_A)
-<<<<<<< HEAD
                 huber_loss = criterion(reconstructed_A, images_A)
                 ssim_loss_value = ssim_loss(reconstructed_A, images_A)
             elif image_type == 'ground':
@@ -212,17 +162,6 @@ def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, 
 
             val_huber_loss += huber_loss.item()
             val_ssim_loss += ssim_loss_value.item()
-=======
-                loss = criterion(reconstructed_A, images_A)
-            elif image_type == 'ground':
-                encoded_G = encoder(images_G)
-                reconstructed_G = decoder(encoded_G)
-                loss = criterion(reconstructed_G, images_G)
-            else:
-                raise ValueError('Invalid image type. Use either "aerial" or "ground".')
-            
-            val_loss += loss.item()
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 
             # Visualize Attention Maps and Reconstructions for a batch during validation
             if first_batch:
@@ -238,14 +177,9 @@ def validate(encoder, decoder, val_loader_panos, val_loader_cutouts, criterion, 
                     elif image_type == 'ground':
                         visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'best_reconstruction.png'))
 
-<<<<<<< HEAD
     val_avg_huber_loss = val_huber_loss / len(val_loader)
     val_avg_ssim_loss = val_ssim_loss / len(val_loader)
     return val_avg_huber_loss, val_avg_ssim_loss
-=======
-    val_avg_loss = val_loss / len(val_loader)
-    return val_avg_loss
->>>>>>> 16bd49b974e958cca4595fa61d245c34123fd354
 
 
 if __name__ == '__main__':
