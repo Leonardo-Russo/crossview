@@ -5,3 +5,4 @@ models/**/*.pth
 archive/old results/
 pretrained_models/
 autoencoders/**/*.pth
+tests/**/**/*.png
