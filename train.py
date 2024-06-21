@@ -39,7 +39,7 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
     patience_counter = 0
     best_model_path = None
 
-    embedded_loss = True
+    embedded_loss = False
 
     for epoch in range(epochs):
         
@@ -61,6 +61,8 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
                 else:
                     loss_A = criterion_A(reconstructed_A, images_A)
                     loss_G = criterion_G(reconstructed_G, images_G)
+
+                
                 huber_loss = loss_A + loss_G
                 running_huber_loss += huber_loss.item()
 
@@ -125,7 +127,7 @@ def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results
     val_ssim_loss = 0
     first_batch = True
 
-    embedded_loss = True
+    embedded_loss = False
 
     with torch.no_grad():
         for images_A, images_G in val_loader:
@@ -177,7 +179,7 @@ if __name__ == '__main__':
     aerial_scaling = 3                      # scaling factor for aerial images
     hidden_dims = 512                       # hidden dimensions
     n_encoded = 1024                        # output size for the encoders
-    n_phi = 10                              # size of phi
+    n_phi = 16                              # size of phi
     batch_size = 64
     shuffle = True
 
@@ -196,16 +198,18 @@ if __name__ == '__main__':
     optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
 
     # Loss Function
-    encoder_A = Encoder(latent_dim=n_encoded).to(device)
-    encoder_G = Encoder(latent_dim=n_encoded).to(device)
-    for param in encoder_A.parameters():
-        param.requires_grad = False
-    for param in encoder_G.parameters():
-        param.requires_grad = False
-    criterion_A = PerceptualLoss(encoder_A)
-    criterion_G = PerceptualLoss(encoder_G)
+    # encoder_A = Encoder(latent_dim=n_encoded).to(device)
+    # encoder_G = Encoder(latent_dim=n_encoded).to(device)
+    # for param in encoder_A.parameters():
+    #     param.requires_grad = False
+    # for param in encoder_G.parameters():
+    #     param.requires_grad = False
+    # criterion_A = PerceptualLoss(encoder_A)
+    # criterion_G = PerceptualLoss(encoder_G)
     # criterion_A = nn.HuberLoss()
     # criterion_G = nn.HuberLoss()
+    criterion_A = nn.HuberLoss(reduction='none')
+    criterion_G = nn.HuberLoss(reduction='none')
 
     # Transformations
     transform_cutouts = transforms.Compose([
