@@ -317,10 +317,10 @@ class PizzaSlicer(nn.Module):
         x = self.fc1(x)
         x = F.elu(x)
         x = self.fc2(x)
-        print("x shape: ", x.shape)
-        print("x: ", x)
+        # print("x shape: ", x.shape)
+        # print("x: ", x)
         x = torch.softmax(x, dim=-1) * self.output_dims
-        print("x softmaxed: ", x)
+        # print("x softmaxed: ", x)
         return x
     
 
@@ -331,9 +331,9 @@ class CrossView(nn.Module):
         self.encoder_A = Encoder(latent_dim=n_encoded)
         self.encoder_G = Encoder(latent_dim=n_encoded)
         self.pizza_slicer = PizzaSlicer(input_dims=2*n_encoded, output_dims=n_phi)
-        self.mlp_A2G = MLP(input_dims=n_phi+n_encoded, output_dims=n_encoded)
+        # self.mlp_A2G = MLP(input_dims=n_phi+n_encoded, output_dims=n_encoded)
         self.mlp_G2A = MLP(input_dims=n_phi+n_encoded, output_dims=n_encoded)
-        self.decoder_A2G = Decoder(input_dims=n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
+        # self.decoder_A2G = Decoder(input_dims=n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
         self.decoder_G2A = Decoder(input_dims=n_encoded, hidden_dims=hidden_dims, output_channels=output_channels, initial_size=7)
         
         self.image_size = image_size
@@ -346,11 +346,11 @@ class CrossView(nn.Module):
             decoder_G_path = os.path.join('pretrained_models', 'decoder_G.pth')
             self.encoder_A.load_state_dict(torch.load(encoder_A_path))
             self.encoder_G.load_state_dict(torch.load(encoder_G_path))
-            self.decoder_A2G.load_state_dict(torch.load(decoder_G_path))
+            # self.decoder_A2G.load_state_dict(torch.load(decoder_G_path))
             self.decoder_G2A.load_state_dict(torch.load(decoder_A_path))
             freeze(self.encoder_A)
             freeze(self.encoder_G)
-            freeze(self.decoder_A2G)
+            # freeze(self.decoder_A2G)
             freeze(self.decoder_G2A)
 
     
@@ -364,19 +364,20 @@ class CrossView(nn.Module):
         phi = self.pizza_slicer(torch.cat((encoded_A, encoded_G), dim=-1))
 
         # Concatenate the encoded attended images with phi
-        encoded_A_phi = self.mlp_A2G(torch.cat((phi, encoded_A), dim=1))   # -> encoded_G
+        # encoded_A_phi = self.mlp_A2G(torch.cat((phi, encoded_A), dim=1))   # -> encoded_G
         encoded_G_phi = self.mlp_G2A(torch.cat((phi, encoded_G), dim=1))
 
         # Decode the MLP output into reconstructed images
         reconstructed_A = self.decoder_G2A(encoded_G_phi)
-        reconstructed_G = self.decoder_A2G(encoded_A_phi)
+        # reconstructed_G = self.decoder_A2G(encoded_A_phi)
 
         # Print shapes for debugging
         if self.debug:
             print(f"Encoded A shape: {encoded_A.shape}, Encoded G shape: {encoded_G.shape}, "
                   f"Phi shape: {phi.shape}, Concat Phi with Encoded G shape: {torch.cat((phi, encoded_G), dim=1).shape}")
             
-        return reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi
+        # return reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi
+        return reconstructed_A, 0, encoded_A, encoded_G, phi, 0, encoded_G_phi
 
 
 

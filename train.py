@@ -15,6 +15,30 @@ from utils import *
 from model import *
 from dataset import *
 
+def create_circular_mask(image_size, device):
+    y, x = torch.meshgrid(torch.linspace(-1, 1, image_size, device=device), torch.linspace(-1, 1, image_size, device=device), indexing='ij')
+    mask = (x**2 + y**2) <= 1
+    return mask.float()
+
+def create_cake_mask(image_size, n_phi, phi, device):
+    y, x = torch.meshgrid(torch.linspace(-1, 1, image_size, device=device), torch.linspace(-1, 1, image_size, device=device), indexing='ij')
+    angles = torch.atan2(y, x)
+    angles[angles < 0] += 2 * np.pi  # Normalize angles to [0, 2*pi]
+    slice_angles = 2 * np.pi / n_phi
+
+    mask = torch.zeros((phi.size(0), image_size, image_size), device=device)  # Initialize mask for the entire batch
+    for i in range(n_phi):
+        mask += ((angles >= i * slice_angles) & (angles < (i + 1) * slice_angles)).float() * phi[:, i].view(-1, 1, 1)
+
+    return mask
+
+def apply_masks_and_compute_loss(reconstructed, original, mask, criterion):
+    masked_reconstructed = reconstructed * mask
+    masked_original = original * mask
+    loss = criterion(masked_reconstructed, masked_original)
+    loss = loss.mean(dim=1, keepdim=True)  # Average across channels
+    return loss
+
 def train(model, train_loader, val_loader, device, criterion_A, criterion_G, optimizer, epochs=1, save_path='untitled', debug=False):
     model.to(device)
 
@@ -41,6 +65,8 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
 
     embedded_loss = False
 
+    circular_mask = create_circular_mask(image_size, device)
+
     for epoch in range(epochs):
         
         model.train()
@@ -54,22 +80,40 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
                 # Forward Pass
                 reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi = model(images_A, images_G)
 
+                # Apply circular mask
+                masked_reconstructed_A = reconstructed_A * circular_mask
+                masked_images_A = images_A * circular_mask
+
                 # Compute Pixel-wise Loss
                 if embedded_loss:
                     loss_A = nn.functional.l1_loss(encoded_A_phi, encoded_G)
-                    loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
+                    # loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
                 else:
-                    loss_A = criterion_A(reconstructed_A, images_A)
-                    loss_G = criterion_G(reconstructed_G, images_G)
+                    loss_A = criterion_A(masked_reconstructed_A, masked_images_A)
+                    # loss_G = criterion_G(reconstructed_G, images_G)
 
-                
-                huber_loss = loss_A + loss_G
+                # Average across channels
+                loss_A = loss_A.mean(dim=1, keepdim=True)  # [batchsize, 1, imsize, imsize]
+                # loss_G = loss_G.mean(dim=1, keepdim=True)  # [batchsize, 1, imsize, imsize]
+
+                # Create cake mask and apply to loss
+                cake_mask = create_cake_mask(image_size, n_phi, phi, device)
+                masked_loss_A = loss_A * cake_mask
+                # masked_loss_G = loss_G * cake_mask
+
+                # Reduce the loss to a scalar
+                huber_loss_A = masked_loss_A.mean()
+                # huber_loss_G = masked_loss_G.mean()
+
+                # huber_loss = huber_loss_A + huber_loss_G
+                huber_loss = huber_loss_A
                 running_huber_loss += huber_loss.item()
 
                 # Compute SSIM Loss
                 ssim_loss_A = ssim_loss(reconstructed_A, images_A)
-                ssim_loss_G = ssim_loss(reconstructed_G, images_G)
-                ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+                # ssim_loss_G = ssim_loss(reconstructed_G, images_G)
+                # ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+                ssim_loss_value = 1 - ssim_loss_A
                 running_ssim_loss += ssim_loss_value.item()
 
                 # Reset Gradients
@@ -89,7 +133,7 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
         train_ssim_losses.append(train_ssim_loss)
 
         # Validation
-        val_huber_loss, val_ssim_loss = validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device)
+        val_huber_loss, val_ssim_loss = validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device, circular_mask)
         val_huber_losses.append(val_huber_loss)
         val_ssim_losses.append(val_ssim_loss)
 
@@ -117,11 +161,11 @@ def train(model, train_loader, val_loader, device, criterion_A, criterion_G, opt
     if best_model_path:
         print(f'Loading the model from {best_model_path}...')
         model.load_state_dict(torch.load(best_model_path))
-        final_val_loss, final_val_ssim_loss = validate(model, val_loader, criterion_A, criterion_G, "best", epochs, results_path, device)
+        final_val_loss, final_val_ssim_loss = validate(model, val_loader, criterion_A, criterion_G, "best", epochs, results_path, device, circular_mask)
         print(f'Best Validation Loss: {final_val_loss:.4f}')
 
 
-def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device):
+def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results_path, device, circular_mask):
     model.eval()
     val_huber_loss = 0
     val_ssim_loss = 0
@@ -136,30 +180,50 @@ def validate(model, val_loader, criterion_A, criterion_G, epoch, epochs, results
             # Forward Pass
             reconstructed_A, reconstructed_G, encoded_A, encoded_G, phi, encoded_A_phi, encoded_G_phi = model(images_A, images_G)
 
+            # Apply circular mask
+            masked_reconstructed_A = reconstructed_A * circular_mask
+            masked_images_A = images_A * circular_mask
+
             # Compute Pixel-wise Loss
             if embedded_loss:
                 loss_A = nn.functional.l1_loss(encoded_A_phi, encoded_G)
-                loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
+                # loss_G = nn.functional.l1_loss(encoded_G_phi, encoded_A)
             else:
-                loss_A = criterion_A(reconstructed_A, images_A)
-                loss_G = criterion_G(reconstructed_G, images_G)
-            huber_loss = loss_A + loss_G
+                loss_A = criterion_A(masked_reconstructed_A, masked_images_A)
+                # loss_G = criterion_G(reconstructed_G, images_G)
+
+            # Average across channels
+            loss_A = loss_A.mean(dim=1, keepdim=True)  # [batchsize, 1, imsize, imsize]
+            # loss_G = loss_G.mean(dim=1, keepdim=True)  # [batchsize, 1, imsize, imsize]
+
+            # Create cake mask and apply to loss
+            cake_mask = create_cake_mask(image_size, n_phi, phi, device)
+            masked_loss_A = loss_A * cake_mask
+            # masked_loss_G = loss_G * cake_mask
+
+            # Reduce the loss to a scalar
+            huber_loss_A = masked_loss_A.mean()
+            # huber_loss_G = masked_loss_G.mean()
+
+            # huber_loss = huber_loss_A + huber_loss_G
+            huber_loss = huber_loss_A
             val_huber_loss += huber_loss.item()
 
             # Compute SSIM Loss
             ssim_loss_A = ssim_loss(reconstructed_A, images_A)
-            ssim_loss_G = ssim_loss(reconstructed_G, images_G)
-            ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+            # ssim_loss_G = ssim_loss(reconstructed_G, images_G)
+            # ssim_loss_value = 1 - (ssim_loss_A + ssim_loss_G) / 2
+            ssim_loss_value = 1 - ssim_loss_A
             val_ssim_loss += ssim_loss_value.item()
 
             if first_batch:
                 first_batch = False
                 if epoch != "best":
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', f'epoch_{epoch + 1}_reconstruction.png'))
-                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
+                    # visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', f'epoch_{epoch + 1}_reconstruction.png'))
                 else:
                     visualize_reconstruction(images_A, reconstructed_A, epoch, save_path=os.path.join(results_path, 'aerial', 'best_reconstruction.png'))
-                    visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
+                    # visualize_reconstruction(images_G, reconstructed_G, epoch, save_path=os.path.join(results_path, 'ground', 'best_reconstruction.png'))
 
     val_avg_huber_loss = val_huber_loss / len(val_loader)
     val_avg_ssim_loss = val_ssim_loss / len(val_loader)
@@ -198,16 +262,6 @@ if __name__ == '__main__':
     optimizer = optim.Adam(params=params, lr=learning_rate, weight_decay=weight_decay)
 
     # Loss Function
-    # encoder_A = Encoder(latent_dim=n_encoded).to(device)
-    # encoder_G = Encoder(latent_dim=n_encoded).to(device)
-    # for param in encoder_A.parameters():
-    #     param.requires_grad = False
-    # for param in encoder_G.parameters():
-    #     param.requires_grad = False
-    # criterion_A = PerceptualLoss(encoder_A)
-    # criterion_G = PerceptualLoss(encoder_G)
-    # criterion_A = nn.HuberLoss()
-    # criterion_G = nn.HuberLoss()
     criterion_A = nn.HuberLoss(reduction='none')
     criterion_G = nn.HuberLoss(reduction='none')
 
